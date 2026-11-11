@@ -1,0 +1,19 @@
+# Team Blaugrana Bytes: exact versions that produce our submission file.
+# Tested with Python 3.11.4 (numpy 2.4 and pandas 3.1 need Python >= 3.11).
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements-lock.txt
+#
+# numpy + pandas: the pipeline and the official scorer.
+# certifi: HTTPS certificates for training/fetch.py (python.org's macOS build ships without them).
+# pytest and its dependencies: the tests only.
+certifi==2026.10.23
+iniconfig==2.3.1
+numpy==2.4.6
+packaging==26.3
+pandas==3.1.1
+pluggy==1.7.0
+Pygments==2.21.0
+pytest==9.2.0
+python-dateutil==4.0.0
+tzdata==2026.6

@@ -62,3 +62,11 @@ __pycache__/
 venv/
 env/
 .DS_Store
+
+# -- Team Blaugrana Bytes ----------------------------------------------------------------------
+# .cache/ holds the downloaded Metrica sample games AND parsed tracking arrays. The arrays parsed
+# from data/ are a frame-level extract of the match data: never commit them.
+.cache/
+# Our generated submission files. The CSV is uploaded via the Google Form, not committed.
+outputs/
+.pytest_cache/

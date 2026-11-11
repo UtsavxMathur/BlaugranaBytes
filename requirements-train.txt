@@ -1,0 +1,7 @@
+# Only needed to TRAIN the model (training/train.py). Making the submission needs
+# requirements-lock.txt alone: the trained trees are stored in models/ and run in plain numpy.
+-r requirements-lock.txt
+joblib==1.6.0
+scikit-learn==1.9.1
+scipy==1.17.1
+threadpoolctl==3.8.0

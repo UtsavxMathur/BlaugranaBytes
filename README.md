@@ -1,3 +1,8 @@
+> **Team Blaugrana Bytes submission.** Our solution lives in this repository next to the
+> organisers' files: start with [SOLUTION.md](SOLUTION.md) (how to install, run and reproduce) and
+> [Blaugrana Bytes.md](Blaugrana%20Bytes.md) (the technical document). One command regenerates
+> the submission: `python generate_submission.py`.
+
 # More than a Hack 2027 — Phase 1: Ball Possession
 
 **Organised by [Metrica Sports](https://metrica-sports.com), [FC Barcelona](https://www.fcbarcelona.com)
