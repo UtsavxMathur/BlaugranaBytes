@@ -1,123 +1,226 @@
-# Team Blaugrana Bytes: technical document
+# Blaugrana Bytes: how we label possession
 
-More than a Hack 2027, Initial Challenge: one label (H / A / D) for each of the 199,319 frames of
-FC Barcelona vs Athletic Club.
+This is our entry for the Initial Challenge of More than a Hack 2027. For each of the 199,319
+frames of FC Barcelona vs Athletic Club we say whether Barcelona has the ball (H), Athletic has it
+(A), or the ball is dead (D). Below we explain what we built and why, what we tried and dropped,
+and where we know it still goes wrong.
 
-## 1. Approach in one paragraph
+## The short version
 
-We learn what possession and dead ball look like from **other matches** that carry frame labels,
-after rendering their clean tracking **the way the competition's tracker delivers it**. A
-gradient-boosted classifier scores every frame from about 110 collective features of the ball and
-the players; a Viterbi decoder turns the frame probabilities into whole possessions; the Smart
-Tagging file adds evidence about restarts where the tracking agrees with it. Nothing was labelled
-by hand, and no label of the provided match was used to train or tune.
+We could not learn from this match, so we learned from other matches. We took public games that
+come with a label on every frame, made their tracking look like the tracking we were given, and
+trained a classifier on them. A second step turns the classifier's frame-by-frame answers into
+whole possessions, and the Smart Tagging file helps us pin down restarts.
 
 ```
-tactical ATD ─► features (ball, players, 110 per frame) ─► 2 tree ensembles ─► Viterbi decoder ─► labels
-                                                            "dead?" "home?"         ▲
-Smart Tagging ─► kick-offs, goal-to-kick-off stretches, restart strikes ────────────┘
+   TRAINING (public games only)                    LABELLING THE MATCH
+
+   7 DFL + 3 Metrica games,                        tactical tracking of the match
+   a label on every frame                                       |
+              |                                                 v
+              v                                     +-----------------------+
+   +------------------------+                       | ~110 numbers per frame|
+   | simulator: render the  |                       +-----------------------+
+   | tracking the way the   |                                   |
+   | real tracker would     |                                   v
+   +------------------------+                       +-----------------------+
+              |                    trained model    | two tree models:      |
+              v                  =================> | "dead?"   "home?"     |
+   +------------------------+                       +-----------------------+
+   | ~110 numbers per frame |                                   |
+   +------------------------+                                   v
+              |                                     +-----------------------+   Smart Tagging:
+              v                                     | decoder: frames into  |<- kick-offs, goals,
+   +------------------------+                       | whole possessions     |   set-piece restarts
+   | train two tree models, |                       +-----------------------+
+   | test on games left out |                                   |
+   +------------------------+                                   v
+                                                    one label per frame: H, A or D
 ```
 
-**Why this and not something else.** The rules forbid training or tuning on the public 5 minutes
-and hand-labelling the match, so supervision has to come from other games. Hand-written rules on
-tracking alone were our starting point (the organisers' baseline, spellF1 0.2433), but the hard
-cases (is a short touch a possession? is the ball dead while the tracker still follows one?) need
-many examples to get right. We did not build our own video ball detector: with one week, the
-provided tracking plus a faithful model of its failures was the better use of time.
+Nothing was labelled by hand, and no label of the provided match was used to train or tune
+anything.
 
-## 2. Assets
+## How we got here
 
-| asset | used? | how |
+We started with the organisers' baseline: whoever is nearest the ball has it, then smooth. Before
+anything else we rewrote it on top of our own file reader and checked that it gives the same
+answer as theirs: it agrees with `baseline_smooth50.csv` on 100.00% of graded frames and scores
+the published 0.3256 on the public window. That told us our reading of the files, the frame
+numbering and the home/away mapping were right.
+
+The rules then closed the obvious shortcuts. We may not label this match by hand, and we may not
+train or tune on the public 5 minutes. So the examples had to come from somewhere else, and we
+found two public sources (section "Training data").
+
+Our first model, trained on those games as they are, looked good on them and much worse on the
+real match. The reason turned out to be simple: public tracking is clean, and the tracking we
+were given is not. We wrote a script that prints only summary numbers about the real tracking
+(how long the ball gaps are, how fast the ball is when it gets lost, how many players are
+tracked) and it showed things we had not guessed. For example, there are almost no ball gaps
+shorter than 5 seconds. The tracker has already drawn a straight line through them. So we stopped
+training on the public games as they are and started rendering them the way this tracker would
+have delivered them.
+
+The second lesson came from checking what our labels meant on the public 5 minutes. Barcelona
+and Athletic were fine, but we were finding only a third of the dead-ball frames. Our model had
+learned "ball missing means ball dead". In the real tracking the ball is often still followed
+during a stoppage, while it rolls away, gets thrown back and is carried to the spot. We taught
+the simulator to do that, using the players' real movements, and the model now looks mostly at
+what the players are doing.
+
+The third lesson was about the metric. spellF1 counts each possession once, but a classifier
+trained on frames sees a 40-second possession forty times more often than a 1-second one. We
+weight the training frames so that short possessions count as much as long ones.
+
+What we did not do is build our own ball detector from the video. With one week, we judged that
+the provided tracking plus an honest model of how it fails was the better bet.
+
+## What we used from the bundle, and what we left out
+
+| asset | used? | what we did with it |
 |---|---|---|
-| Tactical ATD (ball and 46 track slots) | yes | every feature. Slots are treated as anonymous: features are "nearest", "how many", "team average". |
-| Smart Tagging | yes, as gated evidence | (a) the stretch between a `GOALS` tag and the next `Kick Off (After Goal)` tag is set to dead if the model already calls most of it dead; (b) for throw-in, corner and goal-kick tags we find the moment the ball is struck (slow or unseen, then fast) and set the stretch up to it to dead, joined to the stoppage the model found. A tag is used only if tags of its kind agree on the strike time (they do within about 3 s; free kicks do not and are ignored). |
-| `games.py` constants | yes | frame ranges of the halves; the second-half kick-off anchor (frames before it are dead, as FAQ.md states). |
-| Smart Tagging phase teams (Build Up, Progression, ...) | dropped | the tagged team agrees with the nearest-player team on only 55-76% of frames; not strong enough to add. |
-| Homography | looked at, dropped | the tactical camera pans with play, but its centre is a median 12 m from the ball along the pitch: too coarse to place a missing ball. |
-| ATD speed channel | dropped | present on 92% of tracked players and equal to speed from positions within 0.11 m/s; we recompute speed from positions so the same code runs on the training games. |
-| Tactical / broadcast video, broadcast ATD | not used | no time for our own detector; the broadcast feed is not synchronised. |
+| Tactical tracking (ball and 46 track slots) | yes | Everything is computed from it. We never treat a slot as a person; we only ask things like "who is nearest", "how many are close", "how fast is the team moving". |
+| Smart Tagging | yes, carefully | Tags can be wrong, so we only use one when the tracking or the model agrees with it. Between a goal and the next kick-off the ball is dead, and we enforce that when the model already thinks so for most of the stretch (it did for all four). For throw-ins, corners and goal kicks we look for the moment the ball is struck (it goes from slow or unseen to fast) and mark the seconds before it as dead. |
+| `games.py` | yes | The frame ranges of the two halves, and the second-half kick-off. Frames before that kick-off are dead, as the FAQ says. |
+| Team tags on phases (Build Up, Progression, ...) | no | We checked them against the nearest player and they agree only 55-76% of the time. That is too weak to help. |
+| Free-kick tags | no | There are only five, and they do not agree on when the kick comes relative to the tag. |
+| Homography | no | The tactical camera does follow play, but the centre of the picture is typically 12 m from the ball. That is too rough to tell us where a missing ball is. |
+| Speed column of the tracking | no | It matches the speed we compute from positions to within 0.11 m/s, and computing it ourselves lets the same code run on the training games. |
+| Videos and broadcast tracking | no | We had no time for our own detector, and the broadcast feed is not synchronised with the tactical one. |
 
-## 3. Training data
+This is how a set-piece tag helps. The tags start a fixed few seconds before the restart, and in
+the tracking the restart itself is easy to see: the ball goes from slow or unseen to fast. Left
+alone, the model often thinks play has restarted as soon as a player walks to the spot with the
+ball. With the tag, the stoppage runs up to the moment the ball is struck.
 
-| dataset | games | frames | labels |
+```
+set-piece tag          |<------------------- 35 s -------------------->|
+ball speed       fast   slow or unseen ........ FAST
+                                                ^ struck 5 to 7 s after the tag starts
+model alone      A A A D D D D D D D A A A A A A A A A A      play seems to restart early
+with the tag     A A A D D D D D D D D D D D D A A A A A      dead up to the strike
+```
+
+## Training data
+
+| dataset | games | frames | where the labels come from |
 |---|---|---|---|
-| DFL open data (Bassek et al., *Scientific Data* 2025, doi 10.6084/m9.figshare.28196177, CC-BY 4.0) | 7 Bundesliga / 2. Bundesliga matches, 2022/23 | about 1.0 million at 25 fps | `BallStatus` (in play / dead) and `BallPossession` (home / away) on every frame, produced by the league's official data provider. A frame is D if the ball is dead, else H or A. |
-| Metrica Sports sample data (github.com/metrica-sports/sample-data) | 3 anonymised games | about 430,000 at 25 fps | none in the files. We derive them from the public event data with fixed rules (`training/metrica.py`): a team has the ball from its pass, carry, shot, recovery or set piece until the other team gets one; the ball is dead from a ball-out, foul or goal until the next restart. No person labelled frames. |
+| DFL open data (Bassek et al., *Scientific Data* 2025, doi 10.6084/m9.figshare.28196177, CC-BY 4.0) | 7 matches of the Bundesliga and 2. Bundesliga, 2022/23 | about 1.0 million at 25 fps | The files carry two flags on every frame, set by the league's official data provider: whether the ball is in play, and which team has it. We label a frame D when the ball is not in play, otherwise H or A. |
+| Metrica Sports sample data (github.com/metrica-sports/sample-data) | 3 anonymised games | about 430,000 at 25 fps | These have no frame labels, only event data. We turn the events into labels with fixed rules (`training/metrica.py`): a team has the ball from its pass, carry, shot, recovery or set piece until the other team gets one, and the ball is dead from a ball-out, foul or goal until the next restart. Nobody labelled frames by hand. |
 
-No labelled data comes from the provided game.
+None of this comes from the provided match.
 
-**What we took from the provided game without labels.** Aggregate statistics of its tracking
-(`scripts/profile_atd.py`: gap-length histograms, ball speed when lost, player counts, timing of
-tags against ball gaps), used to make the simulator below behave like the real tracker. They are
-listed in `training/calibrate.py`.
+We did take one thing from the provided match: summary statistics of its tracking, printed by
+`scripts/profile_atd.py` and listed in `training/calibrate.py`. They are counts, percentages and
+medians over the whole match, and we used them to set up the simulator described below.
 
-**The public 5 minutes.** Used to confirm the reader (our re-implementation of the baseline
-agrees with `baseline_smooth50.csv` on 100.00% of graded frames and scores the published 0.3256
-there) and, as CHALLENGE.md suggests, to understand what the truth means by "dead": a per-class
-check showed our early models called a stoppage dead only while the ball was missing (34% of the
-true dead frames), because the real tracker often follows a moving ball during stoppages. We
-fixed that in the simulator, from what a tracker plausibly does, and judged every change on
-held-out public games. No setting was fitted to the public window. For transparency, successive
-versions scored spellF1 0.51, 0.58, 0.56, 0.66 and 0.64 on it; the submitted one is the last.
+We want to be clear about the public 5 minutes. We used them to confirm that our reader is
+correct, and, as CHALLENGE.md suggests, to understand what the truth means by "dead". That is how
+we found the dead-ball problem described above. We fixed it by changing what the simulator does,
+and we judged every change on held-out public games. We did not fit any setting to the public
+window, and we did not pick between versions by their score on it. For the record, our five
+versions scored spellF1 0.51, 0.58, 0.56, 0.66 and 0.64 there, and we submit the last one.
 
-## 4. The simulator: making public tracking look like the provided tracking
+## The simulator
 
 The public games have a true ball position on every frame. The provided tracking does not, and
-its profile shows exactly how it differs (`training/simulate.py` reproduces each point):
+the differences are specific. Our simulator (`training/simulate.py`) reproduces each of them:
 
-- **No short gaps.** 132 ball gaps of 5 s or more and almost none shorter: the tracker bridges
-  shorter gaps with a straight line. A "visible" ball is often interpolated.
-- **Heavy smoothing.** Velocity changes are about a third of the true ones.
-- **The ball is lost at stoppages and found at restarts**, but about one gap in four happens
-  while the players are still running (play went on unseen for 5 s or more).
-- **The ball is often tracked while dead.** It keeps its motion when play stops, is passed to the
-  player who restarts, and is carried; the simulator writes this with the players' real movements.
-- **Airborne balls are drawn off the pitch** (flat-pitch projection), up to 20 m out.
-- Players are tracked steadily (10.2 of 11 per team), with rare losses.
+- There are 132 ball gaps of 5 seconds or more and almost none shorter. The tracker bridges
+  shorter gaps with a straight line, so a ball that looks tracked is often interpolated.
+- The ball track is smoothed a lot. A pass shows up as a change of velocity spread over about a
+  second.
+- The ball is usually lost at a stoppage and found again at the restart. But about one gap in
+  four happens while the players are still running, which means play went on unseen.
+- The ball is often tracked while it is dead. It keeps moving when play stops, is passed to the
+  player who will restart, and is carried by that player.
+- A ball in the air is drawn where the camera's line of sight hits the ground, which can be up
+  to 20 m off the pitch.
+- Players are tracked steadily (10.2 of 11 per team on average) and are occasionally lost.
 
-Every training game is rendered three times under randomly drawn settings around the calibrated
-ones, so the model does not depend on any single guess.
+The picture below shows why a missing ball and a dead ball are not the same thing. The tracker
+keeps seeing the ball for a while after play stops and picks it up again before the restart, so
+the gap we receive is shorter than the stoppage. A short stoppage may leave no gap at all.
 
-## 5. Model
+```
+                        play stops                            ball is struck again
+                            |                                         |
+truth        H H H H H H H H|D D D D D D D D D D D D D D D D D D D D D|A A A A A A A
+ball seen    ###############|########.........................########|#############
+we receive   ---------------|--------           (gap)         --------|-------------
+                             \______/                         \______/
+                          still tracked                     tracked again
+                          after play stops                  before the restart
 
-- **Features** (`possession/features.py`): distance from the ball to the three nearest players of
-  each team; who has been nearer over the past and next 0.4-16 s; ball touches (velocity changes
-  near a player); ball speed, position, distance to the lines; how long the ball has been unseen
-  and what the gap looks like; the players' median speed and share of walkers; team centroids,
-  spread and defensive lines. The pitch is turned so home always attacks the same way.
-- **Two ensembles** of 300 gradient-boosted trees: "is the ball dead?" and "if not, does home
-  have it?". Each is evaluated twice, once with the teams exchanged, and the two answers are
-  combined, so swapping the teams swaps H and A exactly.
-- **Training weights by segment length.** spellF1 counts each possession once. Frames of a
-  segment shorter than 12 s are up-weighted (up to 8x) so that a short possession matters as much
-  as a long one. On held-out games this alone added about 0.04 spellF1.
-- **Decoder** (`possession/decode.py`): Viterbi over H / A / D with a price for each change of
-  label, chosen on held-out games. Integer arithmetic.
-- The trees are trained with scikit-learn and then **evaluated in plain numpy**
-  (`possession/trees.py`), so producing the submission needs only numpy and pandas and gives the
-  same bytes on any machine.
+ball seen    ####......####             we receive  --------------       under 5 s: a straight line
+ball seen    ####................####   we receive  ----            ---- 5 s or more: left empty
+```
 
-## 6. Possession rules we implemented
+We do not know the exact settings of the real tracker, so every training game is rendered three
+times with settings drawn at random around our best estimate. The model then cannot lean on any
+single guess of ours.
 
-- **Who has it** is what the training labels say: the team whose player last controlled the
-  ball. Loose balls, duels and balls in flight stay with the previous team because that is how
-  the labels are written; the decoder's price for changing team removes changes the evidence
-  does not sustain.
-- **Short touches.** A change of team is kept only if the classifier's evidence outweighs the
-  price of two changes. With the segment weights the model keeps about 78% as many possessions
-  as the Metrica labels have; the shortest ones (under 1 s) are still mostly merged.
-- **Dead ball** runs from the moment play stops to the moment the ball is struck again. The
-  model decides both from the ball and, mainly, from the players (they slow down; the ball is
-  carried to a spot). Frames of the second half before its kick-off are dead (FAQ.md). Between a
-  goal and its kick-off the ball is dead.
-- **No abstentions.** We never write X on a graded frame: on spellF1 it only repeats the previous
-  label, and on macroF1 it is a miss.
+## The model
 
-## 7. Validation
+For every frame we compute about 110 numbers (`possession/features.py`). They describe how far
+the ball is from the three nearest players of each team, which team has been nearer over the last
+and next 0.4 to 16 seconds, when each team last touched the ball, how fast the ball is and where
+it is on the pitch, how long it has been unseen, how fast the players are moving and how many are
+walking, and the shape of each team. We turn the pitch so that the home team always attacks in
+the same direction.
 
-Cross-validation by game (a game is never labelled by a model trained on it), scored with the
-official `evaluation/possession_metrics.py`. The organisers' baseline is run on the same rendered
-tracking; on the real match it scores 0.2433.
+Two models of 300 gradient-boosted trees each answer two questions: is the ball dead, and if not,
+does the home team have it? We ask each question twice, the second time with the teams swapped,
+and combine the answers. This guarantees that the model has no built-in preference for home or
+away.
+
+The frames of short possessions and short stoppages get more weight in training (up to 8 times,
+for anything shorter than 12 seconds). On held-out games this added about 0.04 spellF1.
+
+The classifier's answers flicker from frame to frame, and every flicker would count as a
+possession. A decoder (`possession/decode.py`, the Viterbi algorithm) finds the sequence of
+labels that best fits the probabilities while paying a price for every change of label. We chose
+the prices on held-out games.
+
+```
+classifier, frame by frame    H H H H A H H H H H D H D D D D D D H D D A A A A A
+after the decoder             H H H H H H H H H H D D D D D D D D D D D A A A A A
+                                      ^             ^             ^
+                              each of these flickers would have counted as a possession
+```
+
+We train the trees with scikit-learn, then export them and run them ourselves in plain numpy
+(`possession/trees.py`). Making the submission therefore needs only numpy and pandas, and the
+output is the same file on any machine.
+
+## Our possession rules
+
+We did not write the rules by hand; the model learned them from the labels. In practice they come
+out like this.
+
+The ball belongs to the team whose player last controlled it. A loose ball, a duel or a ball in
+flight stays with the previous team, because that is how the training labels are written. The
+decoder also refuses a change of team that the evidence does not hold up for long enough.
+
+A short touch becomes a possession only if the classifier is confident enough to pay for two
+changes of label, into the new team and back. With the training weights the model keeps about 80%
+as many possessions as our Metrica labels contain. The very shortest ones, under a second, are
+still mostly merged into their neighbours.
+
+The ball is dead from the moment play stops until it is struck again. The model judges this
+mainly from the players: they slow down, and someone carries the ball to a spot. Three stretches
+are dead by definition: the second half before its kick-off, the time between a goal and the
+kick-off that follows, and the seconds before a set piece is taken.
+
+We never write X on a graded frame. On spellF1 it would only repeat our previous label, and on
+macroF1 it counts as a mistake.
+
+## How well it works
+
+We tested by leaving games out: a game is never labelled by a model that was trained on it. The
+scores come from the official `evaluation/possession_metrics.py`. The organisers' baseline runs on
+the same simulated tracking for comparison; on the real match it scores 0.2433.
 
 | held-out games | simulator setting | our spellF1 | baseline spellF1 | our macroF1 | baseline macroF1 |
 |---|---|---|---|---|---|
@@ -128,52 +231,72 @@ tracking; on the real match it scores 0.2433.
 | Metrica (3) | more gaps during play | 0.626 | 0.286 | 0.873 | 0.676 |
 | Metrica (3) | ball tracked more when dead | 0.643 | 0.320 | 0.881 | 0.659 |
 
-These numbers come from simulated tracking and, for Metrica, from labels we derived, so they are
-an estimate, not a promise.
+```
+spellF1 on games the model never saw (typical simulator setting)
 
-## 8. Limitations
+Metrica   ours      ################################  0.64
+          baseline  ################                  0.31
+DFL       ours      #############################     0.57
+          baseline  ##############                    0.28
+                    |         |         |         |
+                    0        0.2       0.4       0.6
+```
 
-- Possessions shorter than about 2 s are mostly missed; they are a quarter of all possessions in
-  the Metrica labels.
-- A stoppage of 5-6 s whose only trace is a ball gap looks like play that went on unseen, and is
-  sometimes missed.
-- Stoppages tend to be recognised two to three seconds late when the ball stays in view, and a
-  ball passed around during a stoppage can still be read as a short possession.
-- The simulator puts the ball near the touchlines about twice as often as the real tracker.
-- The possession convention of the training labels (DFL flips on single touches more readily
-  than Metrica) is not exactly the competition's.
-- With more time: the broadcast feed (replays mark stoppages), a detector for the ball in the
-  tactical video, and a second model that scores whole candidate possessions.
+So on games it has never seen, the model scores about twice what the baseline does. Please read
+this as an estimate. The tracking in these tests is simulated, and the Metrica labels are ones we
+derived ourselves.
 
-## 9. Tools
+## Where it still fails
 
-The code was written with an AI coding assistant (Claude Code, a hosted LLM). The competition's
-terms forbid sending match data to such a service, and none was: the assistant never read
-`data/`, and every script that touches the match was run by a team member on their own machine.
-What the assistant saw of the match is only what those scripts print, which is summary
-statistics over the whole match (the profile in `scripts/profile_atd.py`, and the counts,
-percentages and scores printed by `generate_submission.py`). No frame, position or tag was shared.
+- Possessions shorter than about 2 seconds are mostly missed. In the Metrica labels they are a
+  quarter of all possessions.
+- A stoppage of 5 or 6 seconds that shows up only as a ball gap looks just like play that went on
+  unseen, and we sometimes miss it.
+- When the ball stays in view, we tend to notice a stoppage two or three seconds late. A ball
+  passed around during a stoppage can still be read as a short possession.
+- Our simulator puts the ball near the touchlines about twice as often as the real tracker does.
+- The two training sources do not agree with each other, or exactly with the competition, on
+  what counts as a change of possession. The DFL flags change on single touches more readily
+  than the Metrica events do.
 
-## 10. Reproduction
+With more time we would look at the broadcast feed (replays are a good sign of a stoppage), try
+detecting the ball in the tactical video ourselves, and add a second model that judges whole
+candidate possessions and not single frames.
+
+## Tools we used
+
+We wrote the code with the help of an AI coding assistant (Claude Code, a hosted LLM). The
+competition's terms forbid sending match data to such a service, and we did not. The assistant
+never read the `data/` folder, and every script that touches the match was run by a team member
+on their own machine. All the assistant saw of the match is what those scripts print: summary
+statistics over the whole match from `scripts/profile_atd.py`, and the counts, percentages and
+scores printed by `generate_submission.py`. No frame, position or tag was shared.
+
+## Running it
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-lock.txt          # numpy, pandas; Python 3.11
+.venv/bin/pip install -r requirements-lock.txt          # numpy and pandas, Python 3.11
 # unpack the data bundle into data/ (or set MTAH_DATA_DIR)
 .venv/bin/python generate_submission.py                 # writes "outputs/Blaugrana Bytes.csv"
 ```
 
-The command prints the SHA-256 of the file; ours is
-`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`. The model in
-`models/possession.npz` is included. To retrain it from the public games (about 30 minutes;
-scikit-learn's histogram trees are multi-threaded, so a retrained model can differ in the last
-digits):
+The command prints the SHA-256 of the file it wrote. Ours is
+`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`, and we got the same value
+from a fresh clone of the repository.
+
+The trained model is in the repository (`models/possession.npz`). To train it again from the
+public games:
 
 ```bash
 .venv/bin/pip install -r requirements-train.txt
-.venv/bin/python training/fetch.py                      # 2.8 GB of public data
-.venv/bin/python training/train.py
+.venv/bin/python training/fetch.py                      # downloads 2.8 GB of public data
+.venv/bin/python training/train.py                      # about 30 minutes
 ```
 
-`python -m pytest tests -q` runs the checks, including that our reader and baseline reproduce
-`starter/baseline.py` exactly and that the numpy tree evaluation equals scikit-learn's.
+A retrained model can differ slightly from ours, because scikit-learn builds its trees on
+several threads. The submitted file comes from the model in the repository.
+
+`.venv/bin/python -m pytest tests -q` runs our checks. Among other things they confirm that our
+reader and baseline give exactly what `starter/baseline.py` gives, and that running the trees in
+numpy gives exactly what scikit-learn gives.

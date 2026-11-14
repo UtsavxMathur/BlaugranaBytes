@@ -1,33 +1,25 @@
-# Team Blaugrana Bytes: our solution
+# Blaugrana Bytes: how to run our solution
 
-Working notes for the team: how to install, run and reproduce. The technical document for the
-submission is `Blaugrana Bytes.md`. The deadline is Nov 17, 2026. The organisers' documents
-(`CHALLENGE.md`, `DATA.md`, ...) are unchanged; `README.md` only gained a pointer at the top.
+This is the practical guide: how to install, make the submission, check it, and retrain the
+model. If you want to know what we built and why, read the technical document,
+[Blaugrana Bytes.md](Blaugrana%20Bytes.md).
 
-## The approach
+The organisers' own files (`CHALLENGE.md`, `DATA.md`, `evaluation/`, `starter/`, ...) are
+untouched. We only added a pointer at the top of `README.md` and a few lines to `.gitignore`.
 
-1. **Train on other matches.** The rules forbid training or tuning on the public 5 minutes and
-   forbid hand labels on this match, so the model learns from public games:
-   - DFL open data: 7 Bundesliga matches whose tracking carries, on every frame, the team in
-     possession and whether the ball is in play (the same kind of label we are scored on).
-   - Metrica sample data: 3 games in the competition's own file formats, with labels we derive
-     from their event data.
-2. **Render the clean public tracking the way the competition's tracker delivers it** before
-   training on it (`training/simulate.py`). The profile of the real tracking
-   (`scripts/profile_atd.py`, aggregates only) shows the tracker bridges every ball gap under 5 s
-   with a straight line, smooths the track, loses the ball at stoppages and finds it at the
-   restart, and sometimes loses it for 5 s or more during play. The simulator reproduces that
-   chain, and `training/calibrate.py` checks its output against the real profile.
-3. **Classify every frame** (`possession/features.py`, `possession/model.py`): about 110 numbers
-   per frame (who is nearest the ball and for how long, ball touches, how long the ball has been
-   unseen, how fast the players move, team shapes) go into two gradient-boosted tree ensembles:
-   "is the ball dead?" and "if not, does home have it?". Each is asked twice, once with the teams
-   exchanged, so the model cannot prefer one side.
-4. **Decode into possessions** (`possession/decode.py`): a Viterbi pass that pays a price for
-   every change of label, so flicker does not become invented possessions.
-5. **Use Smart Tagging as gated evidence** (`possession/tags.py`): the stretch between a goal
-   and its kick-off is set to dead when the model already mostly agrees, and a set-piece tag with
-   no stoppage found nearby gets a short one just before the usual restart moment.
+## What happens when you run it
+
+```
+data/tactical/ (the match)            models/possession.npz (trained on public games)
+        |                                          |
+        v                                          v
+  read the tracking  -->  ~110 numbers per frame  -->  "dead?" and "home?" for every frame
+                                                                 |
+  read Smart Tagging  -->  kick-offs, goals, restarts  -->  decoder: frames into possessions
+                                                                 |
+                                                                 v
+                                             outputs/Blaugrana Bytes.csv  +  its SHA-256
+```
 
 ## Setup (once)
 
@@ -36,60 +28,91 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-lock.txt     # pinned versions, Python 3.11
 ```
 
-Put the data bundle in `data/` (or set `MTAH_DATA_DIR`). The videos are not used.
+Put the data bundle in `data/`, or point `MTAH_DATA_DIR` at it. We do not use the videos.
 
-## Commands
+## Make the submission
 
 ```bash
-# The submission file: "outputs/Blaugrana Bytes.csv", official format check, SHA-256
 .venv/bin/python generate_submission.py
+```
 
-# Sanity checks on the real match (all print aggregates only)
-.venv/bin/python generate_submission.py --check-public --drift
+This writes `outputs/Blaugrana Bytes.csv`, runs the official format check on it and prints its
+SHA-256. It takes about half a minute. Only numpy and pandas are needed: the trained trees are
+stored in `models/possession.npz` and we run them ourselves in numpy, so a fresh clone gives the
+same file, byte for byte. Our checksum is in the technical document.
+
+## Check it
+
+```bash
+# Our reader against the organisers' baseline: must print 100.00% and MATCH
 .venv/bin/python generate_submission.py --model baseline \
-    --compare evaluation/results/baseline_smooth50.csv --check-public   # must print 100.00%
-.venv/bin/python scripts/profile_atd.py                # saved to outputs/atd_profile.txt
+    --compare evaluation/results/baseline_smooth50.csv --check-public
 
-# Retrain from the public games (needs requirements-train.txt; about 15 minutes)
-.venv/bin/pip install -r requirements-train.txt
-.venv/bin/python training/fetch.py                     # 2.8 GB into .cache/public/
-.venv/bin/python training/train.py                     # writes models/possession.npz
+# Our model on the public 5 minutes. A sanity check, not a way to choose settings.
+.venv/bin/python generate_submission.py --check-public
 
+# Summary statistics of the real tracking (saved to outputs/atd_profile.txt)
+.venv/bin/python scripts/profile_atd.py
+
+# The tests
 .venv/bin/python -m pytest tests -q
 ```
 
-Making the submission needs only numpy and pandas: the trained trees live in
-`models/possession.npz` and are evaluated in plain numpy, with integer arithmetic in the decoder,
-so a fresh clone produces the same file byte for byte.
+Everything these commands print is a count, a percentage or a score. None of them prints frames
+or positions.
 
-## Layout
+## Retrain the model
 
-| path | what |
+```bash
+.venv/bin/pip install -r requirements-train.txt
+.venv/bin/python training/fetch.py        # downloads 2.8 GB of public games into .cache/public/
+.venv/bin/python training/train.py        # about 30 minutes, writes models/possession.npz
+```
+
+Training tests the model on games it has not seen, picks the decoder settings on those, and then
+trains the final model on all ten games. A retrained model can differ slightly from the one in
+the repository, because scikit-learn builds trees on several threads.
+
+Two more scripts are useful when changing the simulator or the model:
+
+```bash
+.venv/bin/python training/calibrate.py    # simulated tracking next to the real profile
+.venv/bin/python training/analyse.py      # which possessions the model finds and misses
+```
+
+## Where things are
+
+```
+generate_submission.py     the one command that makes the submission
+models/possession.npz      the trained model
+possession/                everything used on the match
+training/                  everything that touches the public training games
+scripts/profile_atd.py     summary statistics of the real tracking
+tests/                     the checks
+```
+
+| file | what it does |
 |---|---|
-| `generate_submission.py` | entry point: data bundle -> `outputs/Blaugrana Bytes.csv` |
-| `models/possession.npz` | the trained model (trees, feature names, decoder prices) |
-| `possession/tracking.py` | `Tracking`: one array format for every data source |
-| `possession/epts.py` | FIFA/EPTS reader (competition ATD, Metrica Sample Game 3) |
-| `possession/competition.py` | loads the competition match (tracking, Smart Tagging, homography) |
-| `possession/features.py` | tracking -> numbers per frame |
-| `possession/trees.py` | tree ensembles: export from scikit-learn, exact inference in numpy |
-| `possession/decode.py` | frame probabilities -> possessions |
-| `possession/model.py` | features + trees + decoder; feature-drift report |
-| `possession/baseline.py` | organisers' baseline on arrays: the known floor, and a check of the reader |
-| `possession/smart_tagging.py`, `possession/tags.py` | Smart Tagging reader; gated evidence from it |
-| `possession/profile.py` | aggregate statistics of a tracking |
-| `possession/submission.py` | write / validate / fingerprint the CSV, official scoring helpers |
-| `training/fetch.py`, `dfl.py`, `metrica.py`, `dataset.py` | public games: download, load, labels |
-| `training/simulate.py`, `training/calibrate.py` | renders clean tracking like the competition's tracker; compares with the real profile |
-| `training/train.py` | cross-validation by game, decoder prices, final model |
-| `scripts/profile_atd.py` | prints the profile of the real tracking (you run it) |
-| `tests/` | pytest suite; `tests/make_fake_bundle.py` builds a stand-in bundle from a public game |
+| `possession/epts.py`, `tracking.py`, `competition.py` | read the tracking into arrays; load the match |
+| `possession/features.py` | the numbers we compute for every frame |
+| `possession/trees.py` | runs the trained trees in numpy |
+| `possession/decode.py` | turns frame probabilities into possessions |
+| `possession/model.py` | puts features, trees and decoder together |
+| `possession/smart_tagging.py`, `tags.py` | read the tags; use them for goals and restarts |
+| `possession/baseline.py` | the organisers' baseline on our arrays, to check the reader |
+| `possession/profile.py` | the summary statistics |
+| `possession/submission.py` | writes and checks the CSV |
+| `training/fetch.py`, `dfl.py`, `metrica.py`, `dataset.py` | download and load the public games |
+| `training/simulate.py`, `calibrate.py` | make public tracking look like the real tracker's output |
+| `training/train.py`, `analyse.py` | train, test on held-out games, look at the errors |
+| `tests/make_fake_bundle.py` | builds a stand-in for the data bundle from a public game |
 
-## Results on held-out public games
+## Results on games the model never saw
 
-Cross-validated by game (a game is never in the training set of the model that labels it), scored
-with the official `evaluation/possession_metrics.py`. Three simulator settings: the calibrated
-one, one with more ball gaps during play, one with the ball tracked more often during stoppages.
+A game is never labelled by a model that was trained on it. Scores are from the official
+`evaluation/possession_metrics.py`. We test under three simulator settings: our best estimate of
+the real tracker, one with more ball gaps during play, and one where the ball is tracked more
+often during stoppages.
 
 | held-out games | simulator setting | our spellF1 | baseline spellF1 | our macroF1 | baseline macroF1 |
 |---|---|---|---|---|---|
@@ -100,61 +123,17 @@ one, one with more ball gaps during play, one with the ball tracked more often d
 | Metrica (3) | more gaps during play | 0.626 | 0.286 | 0.873 | 0.676 |
 | Metrica (3) | ball tracked more when dead | 0.643 | 0.320 | 0.881 | 0.659 |
 
-For scale: the same baseline scores spellF1 0.2433 and macroF1 0.6724 on the competition match
-(organisers' figures), so the simulated games are about as hard for it as the real one.
+On the real match the baseline scores spellF1 0.2433 and macroF1 0.6724 (the organisers' figures),
+so our simulated games are about as hard for it as the real one.
 
-Training choices measured on these held-out games (small models, same folds):
+One experiment is worth keeping on record, because it shaped the model. The metric counts each
+possession once, however long it lasts, so we tried giving short possessions and short stoppages
+more weight in training (small models, same held-out games, an earlier version of the simulator):
 
-| change | Metrica spellF1 | DFL spellF1 |
+| training weights | Metrica spellF1 | DFL spellF1 |
 |---|---|---|
-| frames weighted equally | 0.600 | 0.505 |
-| short segments up-weighted (under 6 s, up to 8x) | 0.611 | 0.538 |
-| short segments up-weighted (under 12 s, up to 8x) -- adopted | 0.639 | 0.544 |
-| ... under 24 s, up to 16x | 0.643 | 0.550 |
-| adopted weighting + "moment before/after" features | 0.613 | 0.534 |
-
-The metric counts each possession once, so a classifier trained on frames must be told that the
-frames of a short possession matter as much, in total, as those of a long one.
-
-## Findings so far
-
-- Our reader and baseline reproduce the organisers' exactly on the real match: 100.00% agreement
-  with `baseline_smooth50.csv`, and the public-window score matches the published 0.3256.
-- The real ball track has almost no gaps under 5 s (17 in the match) and 132 gaps of 5 s or
-  more; it is heavily smoothed. So a "visible" ball is often an interpolated one, and a short
-  stoppage can leave no gap at all.
-- About a quarter of the long gaps happen while the players are still running: play went on
-  unseen. "Ball missing" is therefore not "ball dead", and the reverse fails too (the ball is
-  tracked 80% of the time in the two minutes before the second half kicks off).
-- Smart Tagging timing: set-piece tags are 35 s windows that start about 6 s before the restart;
-  a kick-off is taken about 3.4 s after its tag starts; a GOALS tag runs until just before the
-  following kick-off and the ball is seen only 12% of the time inside it.
-- Label conventions differ between sources. Possessions per minute of live play: public truth
-  4.2 (17 possessions, 5 minutes), Metrica event-derived labels 5.8-6.4, DFL 7.1-11.0. All sources
-  agree on stoppages: about 90-113 per match, median 15-24 s.
-- A check of label meaning on the public window showed our first models called a stoppage dead
-  only while the ball was missing (34% of true dead frames found, at 92% precision). The real
-  tracker often follows a moving ball during stoppages. The simulator now writes that in
-  (`_dead_story` in `training/simulate.py`: the ball rolls to rest, is passed via nearby players
-  to the taker, and is carried), so the dead-ball decision leans on what the players do.
-- On held-out games the model finds almost every stoppage of 3 s or more; most remaining errors
-  are possessions shorter than 4 s (45% of all possessions) that it merges into their neighbours.
-
-## Open risks
-
-- The simulator matches the real profile on gap lengths, visible-run lengths, ball smoothness and
-  player speeds, but it puts the ball near the touchlines about twice as often as the real
-  tracking does.
-- The public 5 minutes are used only to confirm the pipeline is not broken, never to choose
-  settings (RULES.md), so there is no direct measurement on the competition match.
-
-## Status
-
-- [x] Core: reader, baseline, CSV writer, entry point, tests
-- [x] Public data: 7 DFL matches + 3 Metrica games load with labels
-- [x] Profile of the real tracking; simulator rebuilt to match it
-- [x] Features, classifier, decoder; model in `models/possession.npz`
-- [x] Smart Tagging evidence (gated)
-- [x] Short possessions: training weights by segment length (+0.04 held-out)
-- [x] Technical document: `Blaugrana Bytes.md`
-- [ ] Freeze, reproducibility check on a fresh clone, public repo, submit
+| every frame counts the same | 0.600 | 0.505 |
+| segments under 6 s count more (up to 8 times) | 0.611 | 0.538 |
+| segments under 12 s count more (up to 8 times), which we kept | 0.639 | 0.544 |
+| segments under 24 s count more (up to 16 times) | 0.643 | 0.550 |
+| the one we kept, plus "a moment before and after" features | 0.613 | 0.534 |
