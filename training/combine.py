@@ -1,6 +1,6 @@
 """Combine the "dead?" ensemble of one model with the "home?" ensemble of another.
 
-    python training/train.py --out models/possession_v1.npz
+    python training/train.py --out .cache/models/possession_v1.npz
     python training/train.py --labels controlled --work-dir .cache/train_controlled \\
         --out .cache/models/possession_controlled.npz
     python training/combine.py              # writes models/possession.npz
@@ -52,7 +52,7 @@ def combine_held_out(dead_dir, team_dir, out_dir, games):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dead-model", default=os.path.join(ROOT, "models", "possession_v1.npz"),
+    parser.add_argument("--dead-model", default=os.path.join(ROOT, ".cache", "models", "possession_v1.npz"),
                         help="model trained on the labels as given (python training/train.py)")
     parser.add_argument("--dead-work-dir", default=os.path.join(ROOT, ".cache", "train"))
     parser.add_argument("--team-model",

@@ -9,14 +9,17 @@ and where we know it still goes wrong.
 
 We could not learn from this match, so we learned from other matches. We took public games that
 come with a label on every frame, rewrote those labels so that possession changes only when a
-team gains control of the ball (the challenge's definition), made their tracking look like the
-tracking we were given, and trained two kinds of model on them: gradient-boosted trees that judge
-each frame, and two sequence networks that read about 25 seconds either side. Their answers are
+team gains control of the ball (the challenge's definition), damaged their tracking the way an
+automatic tracker can (over a wide range of trackers fixed in advance, not fitted to the tracking
+we were given), and trained two kinds of model on them: gradient-boosted trees that judge each
+frame, and two sequence networks that read about 25 seconds either side. Their answers are
 averaged, the trees counting for half. A second step turns those frame-by-frame answers into
-whole possessions, and the Smart
-Tagging file helps us pin down restarts. We also built an
-optional step that uses the broadcast recording; for the reason given in "The rules
-clarification of 15 November", it is not used for the file we submit.
+whole possessions, and the Smart Tagging file marks the stoppages between a goal and the
+kick-off. We also built an optional step that uses the broadcast recording; it is not used for
+the file we submit.
+
+This is our strict version: nothing in it is trained, tuned or set from the provided match, its
+video or its ground truth (section "The rules clarification of 15 November").
 
 ```
    TRAINING (public games only)                    LABELLING THE MATCH
@@ -26,9 +29,9 @@ clarification of 15 November", it is not used for the file we submit.
               |                                                 v
               v                                     +-----------------------+
    +------------------------+                       | ~110 numbers per frame|
-   | simulator: render the  |                       +-----------------------+
-   | tracking the way the   |                                   |
-   | real tracker would     |                                   v
+   | simulator: damage the  |                       +-----------------------+
+   | tracking like many     |                                   |
+   | automatic trackers     |                                   v
    +------------------------+                       +-----------------------+
               |                    trained models   | trees + two sequence  |
               v                  =================> | networks, averaged:   |
@@ -37,16 +40,16 @@ clarification of 15 November", it is not used for the file we submit.
    +------------------------+                                   |
               |                                                 v
               v                                     +-----------------------+   Smart Tagging:
-   +------------------------+                       | decoder: frames into  |<- kick-offs, goals,
-   | train the trees and    |                       | whole possessions     |   set-piece restarts
-   | the network, test on   |                       +-----------------------+
+   +------------------------+                       | decoder: frames into  |<- goal to kick-off
+   | train the trees and    |                       | whole possessions     |   (if the model agrees)
+   | the networks, test on  |                       +-----------------------+
    | games left out         |                                   |
    +------------------------+                                   v
                                                     one label per frame: H, A or D
 ```
 
-Nothing was labelled by hand, and no label of the provided match was used to train or tune
-anything.
+Nothing was labelled by hand, and nothing from the provided match (its labels, its video or
+statistics of its tracking) was used to train, tune or set anything.
 
 ## How we got here
 
@@ -121,40 +124,34 @@ those outputs; we use only its "dead?" and "home?" answers.
 
 What we did not do is build our own ball detector from the video. The broadcast tracking already
 gives a second camera's view of the ball, and it added little, because both cameras lose the
-ball at the same moments. We judged that the provided tracking plus an honest model of how it
-fails was the better bet.
+ball at the same moments. A detector would also have had to be set up without this match, and
+the public games have no video to test it on.
+
+**The version we submit is a strict rebuild.** Two steps above took a number from the match
+itself, without labels: the simulator's settings were chosen from summary statistics of the
+provided tracking, and the restart timing used a typical delay per kind of set piece measured on
+the match while the code ran. The organisers' clarification asks for every tuned value to come
+from external data, so we removed both. The simulator now draws every setting from a wide range
+written down in advance (section "The simulator"), the restart timing is gone, and every model,
+every decoder price and the choice between our network designs were made again on held-out
+public games under the new simulator. The gains quoted in the lessons above were measured with
+the earlier simulator; the tables in "How well it works" are for this version.
 
 ## What we used from the bundle, and what we left out
 
 | asset | used? | what we did with it |
 |---|---|---|
 | Tactical tracking (ball and 46 track slots) | yes | Everything is computed from it. We never treat a slot as a person; we only ask things like "who is nearest", "how many are close", "how fast is the team moving". |
-| Smart Tagging | yes, carefully | Tags can be wrong, so we only use one when the tracking or the model agrees with it. Between a goal and the next kick-off the ball is dead, and we enforce that when the model already thinks so for most of the stretch (it did for all four). For throw-ins, corners and goal kicks we look for the moment the ball is struck (it goes from slow or unseen to fast) and mark the seconds before it as dead. |
+| Smart Tagging | yes, carefully | Tags can be wrong, so we only use one when the model agrees with it. Between a goal and the next kick-off the ball is dead, and we enforce that when the model already thinks so for at least half of the stretch. |
 | `games.py` | yes | The frame ranges of the two halves, and the second-half kick-off. Frames before that kick-off are dead, as the FAQ says. |
 | Team tags on phases (Build Up, Progression, ...) | no | We checked them against the nearest player and they agree only 55-76% of the time. That is too weak to help. |
-| Free-kick tags | no | There are only five, and they do not agree on when the kick comes relative to the tag. |
+| Set-piece tags (throw-ins, corners, goal kicks, free kicks) | no | An earlier version timed restarts from them, with a typical delay per kind measured on this match. That is a value taken from the match, so this version leaves restarts to the model. |
 | Broadcast tracking | not in the submitted file | Used only by the optional `--broadcast` step: to line the broadcast up with the tactical recording, and to tell live pictures from replays (during live play its players stand where the tactical players stand). |
 | Broadcast homography | not in the submitted file | Used only by the optional step: its `valid` flag, since no pitch in the picture means a close-up, a crowd shot or a replay. |
 | Broadcast ball | no | Where the tactical ball is missing, the broadcast has it on only 9% of frames. Both cameras lose the ball at the same moments. |
 | Tactical homography | no | The tactical camera does follow play, but the centre of the picture is typically 12 m from the ball. That is too rough to tell us where a missing ball is. |
 | Speed column of the tracking | no | It matches the speed we compute from positions to within 0.11 m/s, and computing it ourselves lets the same code run on the training games. |
 | Videos | no | We never decode pixels. The two trackings carry what we need from the cameras. |
-
-This is how a set-piece tag helps. The tags start a fixed few seconds before the restart, and in
-the tracking the restart itself is easy to see: the ball goes from slow or unseen to fast. Left
-alone, the model often thinks play has restarted as soon as a player walks to the spot with the
-ball. With the tag, the stoppage runs up to the moment the ball is struck. How many seconds after
-its tag a kind of set piece is usually struck is worked out by the code on the match itself, from
-the tags and the ball speed alone (one median per kind), and a kind whose tags disagree is left
-out.
-
-```
-set-piece tag          |<------------------- 35 s -------------------->|
-ball speed       fast   slow or unseen ........ FAST
-                                                ^ struck 5 to 7 s after the tag starts
-model alone      A A A D D D D D D D A A A A A A A A A A      play seems to restart early
-with the tag     A A A D D D D D D D D D D D D A A A A A      dead up to the strike
-```
 
 ## Training data
 
@@ -186,9 +183,10 @@ For comparison, the public 5 minutes have 4.2 possessions per minute of play. We
 anything to that number; it only tells us that this reading of the definition is close to the
 truth's.
 
-We did take one thing from the provided match: summary statistics of its tracking, printed by
-`scripts/profile_atd.py` and listed in `training/calibrate.py`. They are counts, percentages and
-medians over the whole match, and we used them to set up the simulator described below.
+An earlier version took one thing from the provided match: summary statistics of its tracking
+(counts, percentages and medians over the whole match), used to set up the simulator. This
+version does not: its simulator settings are drawn from ranges fixed in advance (section "The
+simulator").
 
 We want to be clear about the public 5 minutes. We used them to confirm that our reader is
 correct, and, as CHALLENGE.md suggests, to understand what the truth means by "dead". That is how
@@ -202,7 +200,8 @@ about 0.10, 0.02 and 0.008, and ran them on the public window only to check that
 broken. For the last change (a wider first network, +0.007 on held-out games) we did not look at
 the public window at all: its check on the match used only counts over the whole match (the
 number of possessions and stoppages, and how many frames changed), so that no ground truth played
-any part in the decision.
+any part in the decision. The same holds for this strict version: it was not run on the public
+window, and its check on the match used only counts over the whole match.
 
 The optional broadcast step could not be judged on held-out games, because the public games have
 no broadcast feed. Its weights are measured on the match itself without labels, and we looked at
@@ -213,40 +212,39 @@ to 0.86 with precision unchanged at 0.96, macroF1 rose from 0.85 to 0.90, and sp
 ## The rules clarification of 15 November
 
 The organisers' clarification says that anything trained or tuned must use external data only,
-never the ground truth or the provided video. Our model is trained only on the public games, the
-rule we use to relabel them comes from the definition, and the decoder settings are chosen on
-held-out public games. We have asked the organisers about
-three things that use the provided game's own automatic data, never its ground truth or video:
+never the ground truth or the provided video. In the version we submit:
 
-1. the simulator's settings, which we chose from summary statistics of the provided tactical
-   tracking (section "Training data");
-2. values the code works out on the match while it runs: the typical delay between a set-piece
-   tag and the strike (used in our file), and the broadcast step's weights (not used);
-3. looking at the public 5 minutes as a check before keeping a step.
+- every model is trained only on the public games, and every decoder price and every choice
+  between designs is made on held-out public games;
+- the rule we use to relabel those games comes from the challenge's definition;
+- nothing is set from the provided match: the simulator's settings come from ranges fixed in
+  advance, nothing is worked out on the match while the code runs, and the public 5 minutes
+  played no part in it.
 
-Until they answer, we submit the version without the broadcast step: the one in which nothing is
-estimated from our own model's predictions on the match.
+An earlier version took two values from the match's own automatic data (never its ground truth
+or its video): the simulator's settings, from summary statistics of the tactical tracking, and a
+typical delay between a set-piece tag and the strike, worked out while the code ran. We asked the
+organisers about both, and removed them for this version so that no reading of the rules is
+needed. The optional broadcast step, whose weights are measured on the match, stays out of the
+submitted file.
 
 ## The simulator
 
-The public games have a true ball position on every frame. The provided tracking does not, and
-the differences are specific. Our simulator (`training/simulate.py`) reproduces each of them:
+The public games have a true ball position on every frame. Automatic tracking does not, and our
+simulator (`training/simulate.py`) damages the public tracking the way an automatic tracker can:
 
-- There are 132 ball gaps of 5 seconds or more and almost none shorter. The tracker bridges
-  shorter gaps with a straight line, so a ball that looks tracked is often interpolated.
-- The ball track is smoothed a lot. A pass shows up as a change of velocity spread over about a
-  second.
-- The ball is usually lost at a stoppage and found again at the restart. But about one gap in
-  four happens while the players are still running, which means play went on unseen.
-- The ball is often tracked while it is dead. It keeps moving when play stops, is passed to the
-  player who will restart, and is carried by that player.
-- A ball in the air is drawn where the camera's line of sight hits the ground, which can be up
-  to 20 m off the pitch.
-- Players are tracked steadily (10.2 of 11 per team on average) and are occasionally lost.
+- it loses the ball in live play: in the air, among players, when the ball lies or is held still;
+- it may bridge short gaps with a straight line, so a ball that looks tracked can be interpolated;
+- it smooths the ball track and adds detection noise;
+- it often keeps following the ball for a while after play stops, tracks passes on the way to
+  the player who restarts, and picks the ball up again before the restart;
+- a ball in the air is drawn where the camera's line of sight meets the ground;
+- it loses players the camera does not show, now and then a single player, now and then half
+  of them at once.
 
-The picture below shows why a missing ball and a dead ball are not the same thing. The tracker
-keeps seeing the ball for a while after play stops and picks it up again before the restart, so
-the gap we receive is shorter than the stoppage. A short stoppage may leave no gap at all.
+The picture below shows why a missing ball and a dead ball are not the same thing. A tracker that
+keeps seeing the ball for a while after play stops, and picks it up again before the restart,
+leaves a gap shorter than the stoppage. A short stoppage may leave no gap at all.
 
 ```
                         play stops                            ball is struck again
@@ -258,13 +256,31 @@ we receive   ---------------|--------           (gap)         --------|---------
                           still tracked                     tracked again
                           after play stops                  before the restart
 
-ball seen    ####......####             we receive  --------------       under 5 s: a straight line
-ball seen    ####................####   we receive  ----            ---- 5 s or more: left empty
+ball seen    ####......####             we receive  --------------       short gap: bridged
+ball seen    ####................####   we receive  ----            ---- long gap: left empty
 ```
 
-We do not know the exact settings of the real tracker, so every training game is rendered three
-times with settings drawn at random around our best estimate. The model then cannot lean on any
-single guess of ours.
+How much of each a tracker does, we do not take from the match. Every training copy of every
+game draws each setting from a wide range written down in advance, from a near-perfect tracker
+to a poor one, so the model has to cope with all of them:
+
+| what the tracker does | range drawn for each training copy |
+|---|---|
+| bridges ball gaps shorter than | 0 to 6 s |
+| smooths the ball track / adds detection noise | 0 to 0.5 s / 0 to 0.5 m |
+| loses the ball in live play | 0 to 8 times a minute, typically for 0.5 to 3 s |
+| loses a ball lying or held still | 0 to 100% of the time |
+| loses a ball in the air (above 1 to 4 m) | 0 to 100% of the time; always above 4 to 15 m |
+| keeps tracking after play stops | 0 to 5 s on the pitch, 0 to 3 s after it went out |
+| tracks the ball before the restart | with a chance of 0 to 100%, for 0 to 6 s |
+| tracks a pass during a stoppage / the whole stoppage | 0 to 100% / 0 to 50% of stoppages |
+| camera height / distance behind the touchline | 10 to 40 m / 10 to 60 m |
+| loses players far from the action (30 to 70 m away) | 0 to 100% of the time |
+| loses single players / half the players at once | 0 to 10% / 0 to 10% of the time |
+
+Every kind of restart (goal kick, corner, other) gets the same ranges: we assume nothing about
+how this tracker treats them. Held-out tests use three fixed settings across these ranges: low,
+mid and high damage.
 
 ## The model
 
@@ -292,7 +308,8 @@ possession. A decoder (`possession/decode.py`, the Viterbi algorithm) finds the 
 labels that best fits the probabilities while paying a price for every change of label. We chose
 the prices on held-out games, for the average we submit (the trees and both networks of the next
 section): a change of team costs 3,000, entering a stoppage 4,000 and leaving one 4,000, where a
-single frame can cost at most 200.
+single frame can cost at most 600. A change of team may never cost more than a stoppage plus a
+restart: otherwise the decoder would rather slip a one-frame stoppage into every change of team.
 
 ```
 classifier, frame by frame    H H H H A H H H H H D H D D D D D D H D D A A A A A
@@ -330,8 +347,8 @@ spellF1, better in nine of the ten games (twice the standard error: 0.003). The 
 the decoder's prices were left as they were (+0.0077), and when each fold's prices were chosen
 on the other folds only (+0.0086).
 
-Last, we tried three changes to how the first network is built and trained, deciding before we
-ran them that each had to gain at least 0.005 by more than twice its standard error. Six
+Last, we tried three changes to how the first network is built and trained (with our earlier
+simulator), deciding before we ran them that each had to gain at least 0.005 by more than twice its standard error. Six
 simulated copies of each game instead of three, twice the training steps with a learning rate
 that falls to zero, and a little dropout gained only +0.005, in six of ten games, so we did not
 take it. The same recipe with a network twice as wide (128 channels) gained +0.0073 in the
@@ -339,6 +356,15 @@ average, +0.0081 when each fold's prices were chosen on the other folds, and its
 the same as before; on its own this network beats the narrow one by +0.012, in nine of ten games.
 The submission uses it in place of the first network. Training the second network the same way
 did not add anything (-0.0003), so it stays as it was.
+
+All the comparisons in this section were made with our earlier simulator. For the strict version
+we made the choice again with the strict one, on held-out games, each blend with its own prices
+and each fold's prices chosen on the other folds, under a rule written down before the run (keep
+the trees with the wide and the second network unless another blend beats it by 0.005 and by
+twice its standard error). The trees with the wide and the second network score 0.760; with the
+narrow network instead of the wide one, 0.754; with the wide network alone, 0.751; and the same
+three-model average with trees trained only on the controlled labels, 0.761, which is within the
+noise. We kept the first. The trees alone score 0.727.
 
 PyTorch is only used for training. A floating-point network can add its sums in a different order
 on another machine and change a last digit, so for the submission the weights are stored as whole
@@ -413,9 +439,9 @@ seconds), and the model finds only about a third of them. On held-out games it
 predicts about 6% fewer possessions than the truth has.
 
 The ball is dead from the moment play stops until it is struck again. The model judges this
-mainly from the players: they slow down, and someone carries the ball to a spot. Three stretches
-are dead by definition: the second half before its kick-off, the time between a goal and the
-kick-off that follows, and the seconds before a set piece is taken.
+mainly from the players: they slow down, and someone carries the ball to a spot. Two stretches
+are dead by definition: the second half before its kick-off, and the time between a goal and the
+kick-off that follows. The seconds before a set piece is taken are left to the model.
 
 We never write X on a graded frame. On spellF1 it would only repeat our previous label, and on
 macroF1 it counts as a mistake.
@@ -424,34 +450,36 @@ macroF1 it counts as a mistake.
 
 We tested by leaving games out: a game is never labelled by a model that was trained on it. The
 scores come from the official `evaluation/possession_metrics.py`, against the controlled-possession
-labels. The trees alone, our first submission's model and the organisers' baseline run on the
-same simulated tracking for comparison; on the real match the baseline scores 0.2433.
+labels, under the three simulator settings of section "The simulator" (low, mid and high damage).
+The trees alone and the organisers' baseline run on the same simulated tracking for comparison;
+on the real match the baseline scores 0.2433.
 
-| held-out games | simulator setting | our spellF1 | trees alone | first model | baseline | our macroF1 | baseline macroF1 |
-|---|---|---|---|---|---|---|---|
-| DFL (7) | typical | 0.766 | 0.731 | 0.609 | 0.295 | 0.929 | 0.700 |
-| DFL (7) | more gaps during play | 0.746 | 0.700 | 0.594 | 0.256 | 0.921 | 0.671 |
-| DFL (7) | ball tracked more when dead | 0.769 | 0.732 | 0.604 | 0.281 | 0.931 | 0.623 |
-| Metrica (3) | typical | 0.786 | 0.763 | 0.713 | 0.321 | 0.908 | 0.717 |
-| Metrica (3) | more gaps during play | 0.783 | 0.752 | 0.716 | 0.290 | 0.898 | 0.681 |
-| Metrica (3) | ball tracked more when dead | 0.803 | 0.784 | 0.724 | 0.337 | 0.903 | 0.665 |
+| held-out games | simulator setting | our spellF1 | trees alone | baseline | our macroF1 | baseline macroF1 |
+|---|---|---|---|---|---|---|
+| DFL (7) | low damage | 0.771 | 0.751 | 0.336 | 0.930 | 0.726 |
+| DFL (7) | mid | 0.748 | 0.717 | 0.249 | 0.926 | 0.611 |
+| DFL (7) | high damage | 0.724 | 0.681 | 0.179 | 0.911 | 0.501 |
+| Metrica (3) | low damage | 0.823 | 0.801 | 0.369 | 0.913 | 0.761 |
+| Metrica (3) | mid | 0.787 | 0.760 | 0.268 | 0.899 | 0.616 |
+| Metrica (3) | high damage | 0.755 | 0.696 | 0.187 | 0.885 | 0.527 |
 
 ```
-spellF1 on games the model never saw (typical simulator setting)
+spellF1 on games the model never saw (mid simulator setting)
 
-Metrica   ours         #######################################  0.78
-          first model  ###################################      0.71
-          baseline     ################                         0.32
-DFL       ours         ######################################   0.77
-          first model  ##############################           0.61
-          baseline     ###############                          0.30
+Metrica   ours         #######################################  0.79
+          trees alone  ######################################   0.76
+          baseline     #############                            0.27
+DFL       ours         #####################################    0.75
+          trees alone  ####################################     0.72
+          baseline     ############                             0.25
                        |         |         |         |
                        0        0.2       0.4       0.6
 ```
 
-So on games it has never seen, the model scores more than twice what the baseline does, and it
-beat our first model in every one of the ten games. Please read this as an estimate. The tracking
-in these tests is simulated, and the labels are our reading of the definition.
+So on games it has never seen, the model scores two to four times what the baseline does, and
+the networks add 0.02 to 0.06 to the trees alone. These numbers are not comparable with those of
+our earlier versions, because the simulated test data changed. Please read them as an estimate:
+the tracking in these tests is simulated, and the labels are our reading of the definition.
 
 ## Where it still fails
 
@@ -464,7 +492,9 @@ in these tests is simulated, and the labels are our reading of the definition.
   stoppage during which the ball is passed around can be read as play going on. On the public
   window the version before the wide network found 63% of the dead-ball frames; most of the
   rest is one 14.5-second stoppage with the ball in view throughout.
-- Our simulator puts the ball near the touchlines about twice as often as the real tracker does.
+- This version's simulator spans a wide range of trackers instead of being matched to the one we
+  were given. That makes the model robust, but it may be less sharp on this match than a
+  matched one would be, and we cannot measure the difference without the ground truth.
 - Our rule for controlled possession is our reading of the definition. The corrected tracking
   behind the truth may draw the line elsewhere, for example after more than a second of control.
 
@@ -483,7 +513,8 @@ never read the `data/` folder, and every script that touches the match was run b
 on their own machine. All the assistant saw of the match is what those scripts print: summary
 statistics over the whole match from `scripts/profile_atd.py` and `scripts/broadcast_report.py`,
 and the counts, percentages and scores printed by `generate_submission.py`. No frame, position or
-tag was shared.
+tag was shared. For this strict version it saw only counts printed by `generate_submission.py`
+(numbers of possessions and stoppages, shares of frames), and nothing it saw set any value.
 
 ## Running it
 
@@ -495,42 +526,43 @@ python3 -m venv .venv
 ```
 
 The command prints the SHA-256 of the file it wrote. Ours is
-`2afa3d8e43cb4c176a92b3612e7e2b9c035dfbc7e3ad8f2b8167a1cc650102af`, and we got the same value
-from a fresh clone of the repository. It takes about a minute and a half. Our earlier files can
-be made from the same repository: `--sequence models/sequence.npz models/sequence2.npz` (the
-narrow first network) writes the version before the wide network
-(`5b6400a13e1bf218354d8f874089dc32ed5f875a53e92939d8eacaa7f8246205`), `--sequence
-models/sequence.npz` (one network) our third
-submission (`dfa6bf3e193cb200849debb83d36cbfe4ac6e9569f1952517d267dce0877d785`), `--no-sequence`
-(trees only) our second (`0674c775c4b6758a8dd2c89a38f7b3c20dd584fe6772b2992ee1a8324f3afa24`),
-and `--no-sequence --model-file models/possession_v1.npz` our first
-(`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`). `--broadcast` (which also
-needs `data/broadcast/`) adds the optional broadcast step.
+`c5539394fe39271f32cbe2277139df4a6de0574ea17886144225786dedb1b598`, and we got the same value from a fresh clone of the repository. It takes about
+a minute. Our earlier versions, whose training simulator was set from summary statistics of the
+match's tracking, are in the git history (commit `6630f72` and before). `--broadcast` (which
+also needs `data/broadcast/`) adds the optional broadcast step, which is not part of our file.
 
 The trained models are in the repository (`models/possession.npz`, `models/sequence_wide.npz`,
-`models/sequence.npz`,
 `models/sequence2.npz`). To build them again from the public games:
 
 ```bash
 .venv/bin/pip install -r requirements-train.txt          # scikit-learn and PyTorch
 .venv/bin/python training/fetch.py --only metrica         # 190 MB of public data
 .venv/bin/python training/fetch.py --only dfl             # 2.6 GB
-.venv/bin/python training/train.py --out models/possession_v1.npz        # labels as given
-.venv/bin/python training/train.py --labels controlled \
-    --work-dir .cache/train_controlled --out .cache/models/possession_controlled.npz
-.venv/bin/python training/combine.py                    # writes models/possession.npz
-.venv/bin/python training/sequence.py --export models/sequence.npz
-.venv/bin/python training/sequence.py --change --with .cache/train_seq_int --name sequence2 \
-    --work-dir .cache/train_seq_change --out .cache/models/sequence2.pt --export models/sequence2.npz
-.venv/bin/python training/sequence.py --copies 6 --train-steps 3000 --cosine --dropout 0.1 \
-    --width 128 --with .cache/train_seq_change_int --name seqB --work-dir .cache/train_seqB \
-    --out .cache/models/sequence_wide.pt --export models/sequence_wide.npz
+# the trees: "dead?" from the labels as given, "home?" from controlled possession, combined
+.venv/bin/python training/train.py --work-dir .cache/strict/train \
+    --out .cache/strict/models/possession_v1.npz
+.venv/bin/python training/train.py --labels controlled --work-dir .cache/strict/train_controlled \
+    --out .cache/strict/models/possession_controlled.npz
+.venv/bin/python training/combine.py --dead-model .cache/strict/models/possession_v1.npz \
+    --dead-work-dir .cache/strict/train --team-model .cache/strict/models/possession_controlled.npz \
+    --team-work-dir .cache/strict/train_controlled --work-dir .cache/strict/train_hybrid
+# the wide network: held-out predictions, in whole numbers
+.venv/bin/python training/sequence.py --steps cv int --copies 6 --train-steps 3000 --cosine \
+    --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt
+# the second network: held-out predictions, the average of all three and its prices, the final network
+.venv/bin/python training/sequence.py --change --with .cache/strict/train_seqB_int \
+    --trees .cache/strict/train_hybrid --name strict2 --compare none \
+    --work-dir .cache/strict/train_seq_change --out .cache/strict/models/sequence2.pt --export models/sequence2.npz
+# the final wide network, with the same prices
+.venv/bin/python training/sequence.py --steps final --copies 6 --train-steps 3000 --cosine \
+    --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt \
+    --export models/sequence_wide.npz --prices .cache/strict/train_seq_change_blend/prices.json
 ```
 
-Each tree training run takes about 30 minutes, each narrow network about 20 and the wide one
-about 50. A retrained model can
-differ slightly from ours, because scikit-learn and PyTorch add up some sums on several threads
-or on the graphics processor. The submitted file comes from the models in the repository.
+Each tree run takes about 30 minutes, the wide network about 50 and the second network about 20.
+A retrained model can differ slightly from ours, because scikit-learn and PyTorch add up some
+sums on several threads or on the graphics processor. The submitted file comes from the models in
+the repository.
 
 `.venv/bin/python -m pytest tests -q` runs our checks. Among other things they confirm that our
 reader and baseline give exactly what `starter/baseline.py` gives, that running the trees in

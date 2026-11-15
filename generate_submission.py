@@ -12,12 +12,14 @@ and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for 
                        (models/sequence_wide.npz, models/sequence2.npz), which run in whole
                        numbers (possession/seqnet.py). The trees count for half, the networks
                        for a quarter each.
-  --sequence FILE ..   other sequence networks: --sequence models/sequence.npz models/sequence2.npz
-                       gives the version before the wide network (sha256 5b6400a1...46205), and
-                       --sequence models/sequence.npz alone our Phase 3 file (dfa6bf3e...877d785).
-  --no-sequence        trees only: our Phase 1 file (sha256 0674c775...3afa24).
-  --model-file FILE    another tree model; with --no-sequence, models/possession_v1.npz gives our
-                       first submission (sha256 a320484e...29f5d).
+  --sequence FILE ..   other sequence networks (possession/seqnet.py files).
+  --no-sequence        the trees only.
+  --model-file FILE    another tree model.
+
+                       This is the STRICT version: nothing in it is set from the provided match
+                       (see the technical document). Our earlier versions, whose training
+                       simulator was set from summary statistics of the match's tracking, are
+                       in the git history (commit 6630f72 and before).
   --model baseline     the organisers' baseline (nearest player + majority vote). Its full-match
                        score is published (spellF1 0.2433), so it is the known floor.
   --compare FILE       % of graded frames on which the output agrees with another submission.
@@ -72,27 +74,21 @@ def n_stoppages(codes, tracking):
 
 
 def decode(prob, tracking, prices, tags, live_cost=None, verbose=True):
-    """Label codes from frame probabilities: the decoder, then (with tags) a second pass with
-    Smart Tagging evidence where the first pass allows it (possession/tags.py)."""
+    """Label codes from frame probabilities: the decoder, then (with tags) a second pass with the
+    goal-to-kick-off stretches of Smart Tagging where the model agrees (possession/tags.py)."""
     forced = second_half_wait(tracking)
     codes = model_module.decode_periods(prob, tracking.periods, prices, forced_dead=forced,
                                         live_cost=live_cost)
     if tags is None:
         return codes
-    fps = tracking.fps
-    ball, _ = geometry.to_metres(tracking)
-    speed = geometry.speed_of(ball, fps, half_span=2)
-    goals, n_goals = tags_module.goal_stretches(tags, prob, fps)
-    restarts, report = tags_module.restart_stretches(tags, codes, speed, fps)
+    goals, n_goals = tags_module.goal_stretches(tags, prob, tracking.fps)
     again = model_module.decode_periods(prob, tracking.periods, prices,
-                                        forced_dead=forced + goals + restarts, live_cost=live_cost)
+                                        forced_dead=forced + goals, live_cost=live_cost)
     if verbose:
         inside = tracking.in_periods()
         print("  Smart Tagging: {} of {} goal-to-kick-off stretches set to dead".format(
             len(goals), n_goals))
-        print("  Smart Tagging, restarts (when the ball is first struck after a set-piece tag):")
-        print(tags_module.describe(report))
-        print("  ... together this changed {:.2%} of graded frames; possessions {} -> {}; D share "
+        print("  ... this changed {:.2%} of graded frames; possessions {} -> {}; D share "
               "{:.1%} -> {:.1%}".format((again[inside] != codes[inside]).mean(),
                                         n_possessions(codes, tracking),
                                         n_possessions(again, tracking),
