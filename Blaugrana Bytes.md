@@ -93,7 +93,8 @@ possessions cost the most at the strict IoU thresholds, and that changes of team
 precise edges. Trees judge one frame at a time, so we added a network that reads the sequence
 (section "The sequence network"). On its own it was only a little better; averaged with the
 trees it gained about 0.02 spellF1 on held-out games, in nine of the ten. A second network of the
-same kind, averaged in as well, added another 0.008, again in nine of the ten.
+same kind, averaged in as well, added another 0.008, again in nine of the ten. Making the first
+network twice as wide, and training it longer on more simulated copies, added about 0.007 more.
 
 After we had frozen a first version we built one more step. The broadcast feed comes with its
 own tracking, and its homography is not valid on replays, close-ups and crowd shots, which mostly
@@ -196,9 +197,12 @@ and we judged every change on held-out public games. We did not fit any setting 
 window, and we did not pick between versions by their score on it. For the record, our first
 five versions scored spellF1 0.51, 0.58, 0.56, 0.66 and 0.64 there. The version trained on the
 controlled-possession labels scores 0.65, the one that adds the sequence network 0.64, and the
-one we submit, with a second network, 0.64 as well. We chose all three on held-out games, where
-they gained about 0.10, 0.02 and 0.008, and ran them on the public window only to check that
-nothing had broken.
+one with a second network 0.64 as well. We chose all three on held-out games, where they gained
+about 0.10, 0.02 and 0.008, and ran them on the public window only to check that nothing had
+broken. For the last change (a wider first network, +0.007 on held-out games) we did not look at
+the public window at all: its check on the match used only counts over the whole match (the
+number of possessions and stoppages, and how many frames changed), so that no ground truth played
+any part in the decision.
 
 The optional broadcast step could not be judged on held-out games, because the public games have
 no broadcast feed. Its weights are measured on the match itself without labels, and we looked at
@@ -326,9 +330,19 @@ spellF1, better in nine of the ten games (twice the standard error: 0.003). The 
 the decoder's prices were left as they were (+0.0077), and when each fold's prices were chosen
 on the other folds only (+0.0086).
 
+Last, we tried three changes to how the first network is built and trained, deciding before we
+ran them that each had to gain at least 0.005 by more than twice its standard error. Six
+simulated copies of each game instead of three, twice the training steps with a learning rate
+that falls to zero, and a little dropout gained only +0.005, in six of ten games, so we did not
+take it. The same recipe with a network twice as wide (128 channels) gained +0.0073 in the
+average, +0.0081 when each fold's prices were chosen on the other folds, and its prices came out
+the same as before; on its own this network beats the narrow one by +0.012, in nine of ten games.
+The submission uses it in place of the first network. Training the second network the same way
+did not add anything (-0.0003), so it stays as it was.
+
 PyTorch is only used for training. A floating-point network can add its sums in a different order
 on another machine and change a last digit, so for the submission the weights are stored as whole
-numbers (`models/sequence.npz`, `models/sequence2.npz`) and run in integer arithmetic by
+numbers (`models/sequence_wide.npz`, `models/sequence2.npz`) and run in integer arithmetic by
 `possession/seqnet.py`: every product and sum is exact. For the first network that version gives
 the same labels as the floating-point one on 99.9997% of 4.3 million held-out frames; with both
 networks the held-out scores are the same to four decimals. A test checks it against PyTorch.
@@ -395,7 +409,7 @@ team that had it: that is how we rewrote the training labels, so it is what the 
 The decoder also refuses a change of team that the evidence does not hold up for long enough.
 
 Under this rule very short possessions are rare (2-9% of the relabelled ones last under 2
-seconds), and the model finds only about a quarter to a third of them. On held-out games it
+seconds), and the model finds only about a third of them. On held-out games it
 predicts about 6% fewer possessions than the truth has.
 
 The ball is dead from the moment play stops until it is struck again. The model judges this
@@ -415,12 +429,12 @@ same simulated tracking for comparison; on the real match the baseline scores 0.
 
 | held-out games | simulator setting | our spellF1 | trees alone | first model | baseline | our macroF1 | baseline macroF1 |
 |---|---|---|---|---|---|---|---|
-| DFL (7) | typical | 0.760 | 0.731 | 0.609 | 0.295 | 0.924 | 0.700 |
-| DFL (7) | more gaps during play | 0.733 | 0.700 | 0.594 | 0.256 | 0.915 | 0.671 |
-| DFL (7) | ball tracked more when dead | 0.760 | 0.732 | 0.604 | 0.281 | 0.923 | 0.623 |
-| Metrica (3) | typical | 0.783 | 0.763 | 0.713 | 0.321 | 0.902 | 0.717 |
-| Metrica (3) | more gaps during play | 0.781 | 0.752 | 0.716 | 0.290 | 0.893 | 0.681 |
-| Metrica (3) | ball tracked more when dead | 0.798 | 0.784 | 0.724 | 0.337 | 0.898 | 0.665 |
+| DFL (7) | typical | 0.766 | 0.731 | 0.609 | 0.295 | 0.929 | 0.700 |
+| DFL (7) | more gaps during play | 0.746 | 0.700 | 0.594 | 0.256 | 0.921 | 0.671 |
+| DFL (7) | ball tracked more when dead | 0.769 | 0.732 | 0.604 | 0.281 | 0.931 | 0.623 |
+| Metrica (3) | typical | 0.786 | 0.763 | 0.713 | 0.321 | 0.908 | 0.717 |
+| Metrica (3) | more gaps during play | 0.783 | 0.752 | 0.716 | 0.290 | 0.898 | 0.681 |
+| Metrica (3) | ball tracked more when dead | 0.803 | 0.784 | 0.724 | 0.337 | 0.903 | 0.665 |
 
 ```
 spellF1 on games the model never saw (typical simulator setting)
@@ -428,7 +442,7 @@ spellF1 on games the model never saw (typical simulator setting)
 Metrica   ours         #######################################  0.78
           first model  ###################################      0.71
           baseline     ################                         0.32
-DFL       ours         ######################################   0.76
+DFL       ours         ######################################   0.77
           first model  ##############################           0.61
           baseline     ###############                          0.30
                        |         |         |         |
@@ -442,20 +456,22 @@ in these tests is simulated, and the labels are our reading of the definition.
 ## Where it still fails
 
 - Possessions shorter than about 2 seconds are mostly missed, and a short spell of the other
-  team inside a long possession tends to be merged away: on the public window we make 11
-  possessions where the truth has 17.
+  team inside a long possession tends to be merged away: on the public window the version
+  before the wide network made 11 possessions where the truth has 17.
 - A stoppage of 5 or 6 seconds that shows up only as a ball gap looks just like play that went on
   unseen, and we sometimes miss it.
 - When the ball stays in view, we tend to notice a stoppage two or three seconds late, and a
   stoppage during which the ball is passed around can be read as play going on. On the public
-  window we find 63% of the dead-ball frames; most of the rest is one 14.5-second stoppage with
-  the ball in view throughout.
+  window the version before the wide network found 63% of the dead-ball frames; most of the
+  rest is one 14.5-second stoppage with the ball in view throughout.
 - Our simulator puts the ball near the touchlines about twice as often as the real tracker does.
 - Our rule for controlled possession is our reading of the definition. The corrected tracking
   behind the truth may draw the line elsewhere, for example after more than a second of control.
 
-With more time we would try detecting the ball in the tactical video ourselves, and find the start
-of a stoppage from the moment the ball crosses a line. A second model that judges whole candidate
+With more time we would try to find the start of a stoppage from the moment the ball crosses a
+line. We decided against detecting the ball in the video ourselves: the public games have no
+video, so it could not be tested on them, and any way of setting it up would have depended on
+this match. A second model that judges whole candidate
 possessions, which we tried, did not help (see "How we got here"): the details that decide
 whether a team gained control are smoothed away in the tracking we receive.
 
@@ -479,16 +495,20 @@ python3 -m venv .venv
 ```
 
 The command prints the SHA-256 of the file it wrote. Ours is
-`5b6400a13e1bf218354d8f874089dc32ed5f875a53e92939d8eacaa7f8246205`, and we got the same value
-from a fresh clone of the repository. It takes about 45 seconds. Our earlier files can be made
-from the same repository: `--sequence models/sequence.npz` (one network) writes our third
+`2afa3d8e43cb4c176a92b3612e7e2b9c035dfbc7e3ad8f2b8167a1cc650102af`, and we got the same value
+from a fresh clone of the repository. It takes about a minute and a half. Our earlier files can
+be made from the same repository: `--sequence models/sequence.npz models/sequence2.npz` (the
+narrow first network) writes the version before the wide network
+(`5b6400a13e1bf218354d8f874089dc32ed5f875a53e92939d8eacaa7f8246205`), `--sequence
+models/sequence.npz` (one network) our third
 submission (`dfa6bf3e193cb200849debb83d36cbfe4ac6e9569f1952517d267dce0877d785`), `--no-sequence`
 (trees only) our second (`0674c775c4b6758a8dd2c89a38f7b3c20dd584fe6772b2992ee1a8324f3afa24`),
 and `--no-sequence --model-file models/possession_v1.npz` our first
 (`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`). `--broadcast` (which also
 needs `data/broadcast/`) adds the optional broadcast step.
 
-The trained models are in the repository (`models/possession.npz`, `models/sequence.npz`,
+The trained models are in the repository (`models/possession.npz`, `models/sequence_wide.npz`,
+`models/sequence.npz`,
 `models/sequence2.npz`). To build them again from the public games:
 
 ```bash
@@ -502,9 +522,13 @@ The trained models are in the repository (`models/possession.npz`, `models/seque
 .venv/bin/python training/sequence.py --export models/sequence.npz
 .venv/bin/python training/sequence.py --change --with .cache/train_seq_int --name sequence2 \
     --work-dir .cache/train_seq_change --out .cache/models/sequence2.pt --export models/sequence2.npz
+.venv/bin/python training/sequence.py --copies 6 --train-steps 3000 --cosine --dropout 0.1 \
+    --width 128 --with .cache/train_seq_change_int --name seqB --work-dir .cache/train_seqB \
+    --out .cache/models/sequence_wide.pt --export models/sequence_wide.npz
 ```
 
-Each tree training run takes about 30 minutes and each network about 20. A retrained model can
+Each tree training run takes about 30 minutes, each narrow network about 20 and the wide one
+about 50. A retrained model can
 differ slightly from ours, because scikit-learn and PyTorch add up some sums on several threads
 or on the graphics processor. The submitted file comes from the models in the repository.
 
