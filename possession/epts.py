@@ -165,12 +165,14 @@ def read_metadata(meta_path, raw_path=None):
                     notes=notes)
 
 
-def load(meta_path, raw_path, n_frames=None, pitch=None, periods=None, verbose=True):
-    """Parse a FIFA/EPTS pair into a Tracking (row = frame_id - 1).
+def load(meta_path, raw_path, n_frames=None, pitch=None, periods=None, verbose=True,
+         first_id=FRAME_ID_BASE):
+    """Parse a FIFA/EPTS pair into a Tracking (row = frame_id - first_id).
 
     n_frames  length of the output arrays; default = highest frame_id in the file.
     pitch     (length_m, width_m); default = FieldSize from the metadata, else 105 x 68.
     periods   [(start, stop)] rows of the halves; default = the whole file as one period.
+    first_id  the frame_id of row 0 (1 for the competition files, DATA.md).
     """
     meta = read_metadata(meta_path, raw_path)
     layouts = meta.layouts
@@ -182,7 +184,7 @@ def load(meta_path, raw_path, n_frames=None, pitch=None, periods=None, verbose=T
     if n_frames is None:
         with open(raw_path) as handle:
             n_frames = max(int(line.split(sep, i_frame + 1)[i_frame])
-                           for line in handle if line.strip()) - FRAME_ID_BASE + 1
+                           for line in handle if line.strip()) - first_id + 1
 
     home_id = meta.teams[0][0]
     team = np.array([HOME if team_id == home_id else AWAY for _, team_id in meta.players],
@@ -209,7 +211,7 @@ def load(meta_path, raw_path, n_frames=None, pitch=None, periods=None, verbose=T
                     skipped["outside every layout's frame range"] += 1
                     continue
                 layout = layouts[index]
-            row = frame_id - FRAME_ID_BASE
+            row = frame_id - first_id
             if not 0 <= row < n_frames:
                 skipped["with a frame_id beyond n_frames"] += 1
                 continue

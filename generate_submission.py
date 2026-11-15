@@ -18,6 +18,10 @@ and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for 
   --drift              print every feature's percentiles on this match next to the training
                        games' (aggregates only): shows where the simulator misses reality.
   --no-tags            do not use the Smart Tagging file (see possession/tags.py for its use).
+  --no-broadcast       do not use the broadcast recording. By default it is lined up with the
+                       tactical one and its replays and close-ups are used as evidence of dead
+                       ball (possession/broadcast.py); without it you get the earlier file
+                       (sha256 a320484e...29f5d).
 """
 
 import argparse
@@ -27,7 +31,8 @@ import time
 
 import numpy as np
 
-from possession import baseline, competition, geometry, model as model_module, submission
+from possession import baseline, broadcast, competition, geometry, model as model_module
+from possession import submission
 from possession import tags as tags_module
 from possession.submission import pm
 from possession.tracking import show_path
@@ -48,8 +53,68 @@ def second_half_wait(tracking):
     return [(start, kickoff + 1)] if start <= kickoff < stop else []
 
 
-def predict(model_name, tracking, model_path, tags=None):
-    """(label letters for every frame, frame probabilities or None)."""
+def n_possessions(codes, tracking):
+    return len(pm.possession_spells(codes, list(tracking.periods)))
+
+
+def n_stoppages(codes, tracking):
+    return sum(len(geometry.runs_of(codes[a:b] == pm.D)[0]) for a, b in tracking.periods)
+
+
+def decode(prob, tracking, prices, tags, live_cost=None, verbose=True):
+    """Label codes from frame probabilities: the decoder, then (with tags) a second pass with
+    Smart Tagging evidence where the first pass allows it (possession/tags.py)."""
+    forced = second_half_wait(tracking)
+    codes = model_module.decode_periods(prob, tracking.periods, prices, forced_dead=forced,
+                                        live_cost=live_cost)
+    if tags is None:
+        return codes
+    fps = tracking.fps
+    ball, _ = geometry.to_metres(tracking)
+    speed = geometry.speed_of(ball, fps, half_span=2)
+    goals, n_goals = tags_module.goal_stretches(tags, prob, fps)
+    restarts, report = tags_module.restart_stretches(tags, codes, speed, fps)
+    again = model_module.decode_periods(prob, tracking.periods, prices,
+                                        forced_dead=forced + goals + restarts, live_cost=live_cost)
+    if verbose:
+        inside = tracking.in_periods()
+        print("  Smart Tagging: {} of {} goal-to-kick-off stretches set to dead".format(
+            len(goals), n_goals))
+        print("  Smart Tagging, restarts (when the ball is first struck after a set-piece tag):")
+        print(tags_module.describe(report))
+        print("  ... together this changed {:.2%} of graded frames; possessions {} -> {}; D share "
+              "{:.1%} -> {:.1%}".format((again[inside] != codes[inside]).mean(),
+                                        n_possessions(codes, tracking),
+                                        n_possessions(again, tracking),
+                                        (codes[inside] == pm.D).mean(),
+                                        (again[inside] == pm.D).mean()))
+    return again
+
+
+def describe_broadcast(stages, before, after, tracking):
+    """What the broadcast evidence did (aggregates only)."""
+    inside = tracking.in_periods()
+    print("  broadcast: evidence of dead ball while it shows no live play (possession/broadcast.py)")
+    for row in stages:
+        print("    {:<14} {:>6} graded frames   likelihood ratio {:>6}   extra cost of H/A {:>4}"
+              .format(row["stage"], row["frames"],
+                      "{:.2f}".format(row["ratio"]) if row["calibrated"] else "n/a", row["cost"]))
+    was_live, now_live = before[inside] != pm.D, after[inside] != pm.D
+    print("  ... the broadcast changed {:.2%} of graded frames (live -> D {}, D -> live {}, H <-> A "
+          "{}); possessions {} -> {}; stoppages {} -> {}; D share {:.1%} -> {:.1%}".format(
+              (after[inside] != before[inside]).mean(), int((was_live & ~now_live).sum()),
+              int((~was_live & now_live).sum()),
+              int((was_live & now_live & (before[inside] != after[inside])).sum()),
+              n_possessions(before, tracking), n_possessions(after, tracking),
+              n_stoppages(before, tracking), n_stoppages(after, tracking),
+              (~was_live).mean(), (~now_live).mean()))
+
+
+def predict(model_name, tracking, model_path, tags=None, alignment=None):
+    """(label letters for every frame, frame probabilities or None).
+
+    alignment  a broadcast.Alignment: use the broadcast pictures as evidence of dead ball.
+    """
     if model_name == "baseline":
         return baseline.predict(tracking), None
     if not os.path.isfile(model_path):
@@ -59,29 +124,29 @@ def predict(model_name, tracking, model_path, tags=None):
     print("  model trained on {} public games, decoder prices {}".format(
         len(model.info.get("games", [])), model.prices))
     prob = model_module.probabilities(model, tracking)
-    forced = second_half_wait(tracking)
-    codes = model_module.decode_periods(prob, tracking.periods, model.prices, forced_dead=forced)
-    if tags is not None:
-        # Second pass with Smart Tagging evidence, where the first pass allows it (possession/tags.py)
-        fps = tracking.fps
-        ball, _ = geometry.to_metres(tracking)
-        speed = geometry.speed_of(ball, fps, half_span=2)
-        goals, n_goals = tags_module.goal_stretches(tags, prob, fps)
-        restarts, report = tags_module.restart_stretches(tags, codes, speed, fps)
-        again = model_module.decode_periods(prob, tracking.periods, model.prices,
-                                            forced_dead=forced + goals + restarts)
-        inside = tracking.in_periods()
-        count = lambda c: len(pm.possession_spells(c, list(tracking.periods)))  # noqa: E731
-        print("  Smart Tagging: {} of {} goal-to-kick-off stretches set to dead".format(
-            len(goals), n_goals))
-        print("  Smart Tagging, restarts (when the ball is first struck after a set-piece tag):")
-        print(tags_module.describe(report))
-        print("  ... together this changed {:.2%} of graded frames; possessions {} -> {}; D share "
-              "{:.1%} -> {:.1%}".format((again[inside] != codes[inside]).mean(), count(codes),
-                                        count(again), (codes[inside] == pm.D).mean(),
-                                        (again[inside] == pm.D).mean()))
+    codes = decode(prob, tracking, model.prices, tags, verbose=alignment is None)
+    if alignment is not None:
+        extra, stages = broadcast.dead_evidence(alignment.state, prob[:, 2], tracking.periods,
+                                                exclude=second_half_wait(tracking))
+        again = decode(prob, tracking, model.prices, tags, live_cost=extra)
+        describe_broadcast(stages, codes, again, tracking)
         codes = again
     return submission.to_letters(codes), prob
+
+
+def load_alignment(tracking, data_dir, use_cache=True):
+    """The broadcast recording lined up with the tactical one (possession/broadcast.py)."""
+    feed, valid, _ = broadcast.load(data_dir, use_cache=use_cache)
+    alignment = broadcast.align(tracking, feed, valid)
+    graded = tracking.in_periods()
+    shown = alignment.state[graded]
+    print("  broadcast lined up: {} ({}); graded frames live {:.1%}, replay {:.1%}, no pitch "
+          "{:.1%}, unclear {:.1%}, none {:.1%}".format(
+              ", ".join("shift {} over {} windows".format(s["shift"], s["windows"])
+                        for s in alignment.stretches),
+              broadcast.FLIP_NAMES[alignment.flip],
+              *[(shown == k).mean() for k in range(len(broadcast.STATES))]))
+    return alignment
 
 
 def describe(labels, tracking, prob):
@@ -207,6 +272,8 @@ def main():
                         help="ignore the Smart Tagging file (model output only)")
     parser.add_argument("--drift", action="store_true",
                         help="print each feature's percentiles here next to training's")
+    parser.add_argument("--no-broadcast", action="store_true",
+                        help="ignore the broadcast recording (gives the earlier file)")
     args = parser.parse_args()
 
     started = time.time()
@@ -222,7 +289,16 @@ def main():
             tags, _ = competition.load_tags(tracking, args.data_dir)
         except IOError:
             print("  (no Smart Tagging file found: using the model alone)")
-    letters, prob = predict(args.model, tracking, args.model_file, tags)
+    alignment = None
+    if args.model == "possession" and not args.no_broadcast:
+        try:
+            alignment = load_alignment(tracking, args.data_dir, use_cache=not args.no_cache)
+        except IOError as error:
+            # Not a silent fallback: without the broadcast this would be a different file.
+            raise SystemExit("{}\n\nThe submission uses the broadcast recording too. Put "
+                             "data/broadcast/ in place, or run with --no-broadcast for the "
+                             "tactical-only file.".format(error))
+    letters, prob = predict(args.model, tracking, args.model_file, tags, alignment)
     labels = submission.finalize(letters, tracking.periods)
 
     path = submission.write(args.out, labels)

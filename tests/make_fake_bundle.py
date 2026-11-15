@@ -20,7 +20,7 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from possession import competition, submission  # noqa: E402
+from possession import competition, geometry, submission  # noqa: E402
 from training import dataset  # noqa: E402
 
 N_SLOTS = 46
@@ -59,8 +59,8 @@ def place(game, render=True):
     return ball, players, team, truth
 
 
-def write_atd(folder, ball, players, team):
-    ids = ["T{}".format(i + 1) for i in range(N_SLOTS)]
+def write_atd(folder, ball, players, team, stem="BAR-ATH_tactical"):
+    ids = ["T{}".format(i + 1) for i in range(players.shape[1])]
     meta = ['<?xml version="1.0" encoding="utf-8"?>', "<main><Metadata>",
             "<GlobalConfig><FrameRate>25</FrameRate></GlobalConfig>",
             "<Sessions><Session><FieldSize><Width>105</Width><Height>68</Height></FieldSize>"
@@ -85,11 +85,11 @@ def write_atd(folder, ball, players, team):
     meta.append('</SplitRegister><SplitRegister separator=","><BallChannelRef channelId="x"/>'
                 '<BallChannelRef channelId="y"/><BallChannelRef channelId="z"/></SplitRegister>'
                 "</DataFormatSpecification></DataFormatSpecifications></main>")
-    with open(os.path.join(folder, "BAR-ATH_tactical_atd.xml"), "w") as handle:
+    with open(os.path.join(folder, stem + "_atd.xml"), "w") as handle:
         handle.write("\n".join(meta))
 
     empty = "NaN,NaN,NaN"
-    with open(os.path.join(folder, "BAR-ATH_tactical_atd.txt"), "w") as handle:
+    with open(os.path.join(folder, stem + "_atd.txt"), "w") as handle:
         for f in range(len(ball)):
             row = players[f]
             groups = [empty if x != x else "{:.5f},{:.5f},0.00".format(x, y) for x, y in row]
@@ -142,10 +142,15 @@ def write_tags(folder, truth, seed=0):
     return len(rows)
 
 
-def write_homography(folder, ball, view_m=70.0, image=(1920, 1080), lag=10):
-    """A made-up camera that follows the ball: a top-down view `view_m` metres wide, centred on
-    the last known ball position, smoothed over `lag` frames. Pitch (0..1) -> pixels, as DATA.md."""
-    length, width = 105.3, 68.0
+PITCH = (105.3, 68.0)
+BROADCAST_FRAMES = 164488    # DATA.md
+BROADCAST_SLOTS = 51
+
+
+def camera_focus(ball, lag):
+    """Where a camera following the ball points (metres): the last known ball position,
+    smoothed over `lag` frames."""
+    length, width = PITCH
     n = len(ball)
     focus = ball * (length, width)
     known = ~np.isnan(focus[:, 0])
@@ -153,15 +158,113 @@ def write_homography(folder, ball, view_m=70.0, image=(1920, 1080), lag=10):
     focus = focus[index]
     focus[~np.maximum.accumulate(known)] = (length / 2, width / 2)
     kernel = np.ones(lag) / lag
-    focus = np.stack([np.convolve(focus[:, k], kernel, mode="same") for k in (0, 1)], axis=1)
+    return np.stack([np.convolve(focus[:, k], kernel, mode="same") for k in (0, 1)], axis=1)
+
+
+def write_matrices(path, focus, valid, view_m, image=(1920, 1080)):
+    """Homography CSV of a top-down view `view_m` metres wide centred on `focus` (DATA.md
+    format: pitch 0..1 -> pixels). Rows where `valid` is False get NaN matrices and valid 0."""
+    length, width = PITCH
     w, h = image
     sx, sy = w / view_m, h / (view_m * h / w)
-    with open(os.path.join(folder, "BAR-ATH_tactical_homography.csv"), "w") as handle:
+    with open(path, "w") as handle:
         handle.write("frame,h00,h01,h02,h10,h11,h12,h20,h21,h22,reprojection_error,valid\n")
-        for f in range(n):
+        for f in range(len(focus)):
+            if not valid[f]:
+                handle.write("{},NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,0\n".format(f))
+                continue
             fx, fy = focus[f]
             handle.write("{},{:.6g},0,{:.6g},0,{:.6g},{:.6g},0,0,1,0.25,1\n".format(
                 f, length * sx, w / 2 - fx * sx, width * sy, h / 2 - fy * sy))
+
+
+def write_homography(folder, ball, view_m=70.0, image=(1920, 1080), lag=10):
+    """A made-up tactical camera that follows the ball (see camera_focus)."""
+    write_matrices(os.path.join(folder, "BAR-ATH_tactical_homography.csv"),
+                   camera_focus(ball, lag), np.ones(len(ball), dtype=bool), view_m, image)
+
+
+def broadcast_shift():
+    """Tactical frame = broadcast frame + shift, for the stand-in TV recording: it starts a minute
+    before kick-off, leaves out most of halftime and drops two frames in the second half."""
+    (h1, e1), (h2, _) = competition.periods()
+    first = h1 - 1500
+    second_part = e1 + 1000 - first            # broadcast frame where the second part begins
+    later = (h2 - 3000) - second_part
+    b = np.arange(BROADCAST_FRAMES)
+    return np.where(b < second_part, first, np.where(b < second_part + 40000, later, later + 2))
+
+
+def broadcast_pictures(truth, n_tactical, shift, rng):
+    """(shot (n_b,) 0 live / 1 replay / 2 no pitch, source (n_b,) tactical frame shown).
+
+    Stoppages of 6 s or more usually cut away to close-ups (sometimes with a replay of the play
+    15 s earlier) a second or three after the ball goes dead, and come back a second or four
+    before the restart -- or, now and then, two seconds after it. Open play has an occasional
+    short close-up; outside the match it is mostly studio pictures.
+    """
+    n_b = len(shift)
+    t = np.clip(np.arange(n_b) + shift, 0, n_tactical - 1)
+    state = truth[t]
+    shot = np.zeros(n_b, dtype=np.int8)
+    source = t.copy()
+    for s, n in zip(*geometry.runs_of(state == 2)):
+        if n < 6 * 25 or rng.random() > 0.75:
+            continue
+        a = s + int(rng.uniform(1, 3) * 25)
+        b = s + n + 50 if rng.random() < 0.15 else s + n - int(rng.uniform(1, 4) * 25)
+        if b - a < 25:
+            continue
+        shot[a:b] = 2
+        length = min(b - a - 25, int(rng.uniform(5, 10) * 25))
+        if rng.random() < 0.4 and length > 25:
+            shot[a + 12:a + 12 + length] = 1
+            source[a + 12:a + 12 + length] = np.clip(t[s] - 375 + np.arange(length), 0,
+                                                     n_tactical - 1)
+    for s in np.flatnonzero(rng.random(n_b) < 0.2 / (60 * 25)):
+        shot[s:s + int(rng.uniform(1.5, 3) * 25)] = 2
+    for s, n in zip(*geometry.runs_of(state == 3)):
+        for a in range(s, s + n, 750):
+            if rng.random() < 0.8:
+                shot[a:min(a + 750, s + n)] = 2
+    return shot, source
+
+
+def write_broadcast(root, ball, players, team, truth, seed=1):
+    """A stand-in broadcast recording on its own timeline (DATA.md: not synchronised to
+    tactical): a zoomed camera that follows the ball, and only what is in its picture tracked."""
+    rng = np.random.default_rng(seed)
+    folder = os.path.join(root, "broadcast")
+    os.makedirs(folder, exist_ok=True)
+    scale = np.array(PITCH)
+    shift = broadcast_shift()
+    shot, source = broadcast_pictures(truth, len(ball), shift, rng)
+    focus = camera_focus(ball, 25)[source]
+    pictured = shot != 2
+
+    pos = players[source] * scale
+    inside = ((np.abs(pos[..., 0] - focus[:, None, 0]) < 22)
+              & (np.abs(pos[..., 1] - focus[:, None, 1]) < 14) & pictured[:, None])
+    pos = pos + rng.normal(0.0, 0.1, pos.shape)
+    pos[~inside] = np.nan
+    columns = rng.permutation(BROADCAST_SLOTS)[:players.shape[1]]
+    b_players = np.full((len(shift), BROADCAST_SLOTS, 2), np.nan)
+    b_players[:, columns] = pos / scale
+    b_team = np.ones(BROADCAST_SLOTS, dtype=np.int8)
+    b_team[columns] = team
+
+    b_ball = ball[source].copy()
+    lost = np.zeros(len(shift), dtype=bool)
+    for s in np.flatnonzero(rng.random(len(shift)) < 1 / (8 * 25)):
+        lost[s:s + int(rng.exponential(3 * 25))] = True
+    in_view = ((np.abs(b_ball[:, 0] * PITCH[0] - focus[:, 0]) < 22)
+               & (np.abs(b_ball[:, 1] * PITCH[1] - focus[:, 1]) < 14))
+    b_ball[~(in_view & pictured) | lost] = np.nan
+
+    write_atd(folder, b_ball, b_players, b_team, stem="BAR-ATH_broadcast")
+    write_matrices(os.path.join(folder, "BAR-ATH_broadcast_homography.csv"), focus, pictured,
+                   view_m=44.0)
+    return shift, shot
 
 
 def main():
@@ -171,16 +274,26 @@ def main():
     parser.add_argument("--clean", action="store_true",
                         help="keep the public game's clean tracking (default: render it like the "
                              "real tracker, see training/simulate.py)")
+    parser.add_argument("--no-broadcast", action="store_true",
+                        help="write the tactical recording only")
     args = parser.parse_args()
 
     folder = os.path.join(args.folder, "tactical")
     os.makedirs(folder, exist_ok=True)
-    ball, players, team, truth = place(dataset.load(args.game), render=not args.clean)
+    game = dataset.load(args.game)
+    ball, players, team, truth = place(game, render=not args.clean)
     write_atd(folder, ball, players, team)
     write_homography(folder, ball)
     n_tags = write_tags(folder, truth)
     submission.write(os.path.join(args.folder, "truth.csv"), submission.to_letters(truth))
     print("wrote a stand-in bundle from {} to {}  ({} tags)".format(args.game, args.folder, n_tags))
+    if not args.no_broadcast:
+        clean_ball, clean_players, clean_team, _ = place(game, render=False)
+        shift, shot = write_broadcast(args.folder, clean_ball, clean_players, clean_team, truth)
+        # The true answer, for checking the alignment against (never exists for the real match).
+        np.savez(os.path.join(args.folder, "broadcast_truth.npz"), shift=shift, shot=shot)
+        print("  and a broadcast recording: {} frames, {:.0%} without a pitch, {:.0%} replays"
+              .format(len(shift), (shot == 2).mean(), (shot == 1).mean()))
 
 
 if __name__ == "__main__":

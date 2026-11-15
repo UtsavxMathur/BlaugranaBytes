@@ -16,9 +16,10 @@ data/tactical/ (the match)            models/possession.npz (trained on public g
   read the tracking  -->  ~110 numbers per frame  -->  "dead?" and "home?" for every frame
                                                                  |
   read Smart Tagging  -->  kick-offs, goals, restarts  -->  decoder: frames into possessions
-                                                                 |
-                                                                 v
-                                             outputs/Blaugrana Bytes.csv  +  its SHA-256
+                                                         ^       |
+  data/broadcast/: line its tracking up with the        |       v
+  tactical one; replays and close-ups mean "dead" ------+   outputs/Blaugrana Bytes.csv
+                                                            + its SHA-256
 ```
 
 ## Setup (once)
@@ -28,7 +29,8 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-lock.txt     # pinned versions, Python 3.11
 ```
 
-Put the data bundle in `data/`, or point `MTAH_DATA_DIR` at it. We do not use the videos.
+Put the data bundle in `data/` (both `tactical/` and `broadcast/`), or point `MTAH_DATA_DIR` at
+it. We do not use the videos.
 
 ## Make the submission
 
@@ -37,9 +39,13 @@ Put the data bundle in `data/`, or point `MTAH_DATA_DIR` at it. We do not use th
 ```
 
 This writes `outputs/Blaugrana Bytes.csv`, runs the official format check on it and prints its
-SHA-256. It takes about half a minute. Only numpy and pandas are needed: the trained trees are
-stored in `models/possession.npz` and we run them ourselves in numpy, so a fresh clone gives the
-same file, byte for byte. Our checksum is in the technical document.
+SHA-256. It takes under a minute (the first run also reads the broadcast tracking, which takes a
+minute more). Only numpy and pandas are needed: the trained trees are stored in
+`models/possession.npz` and we run them ourselves in numpy, so a fresh clone gives the same
+file, byte for byte. Our checksum is in the technical document.
+
+`--no-broadcast` leaves the broadcast out and writes our earlier, tactical-only file. Without
+that flag a missing `data/broadcast/` is an error, not a silent change of output.
 
 ## Check it
 
@@ -53,6 +59,9 @@ same file, byte for byte. Our checksum is in the technical document.
 
 # Summary statistics of the real tracking (saved to outputs/atd_profile.txt)
 .venv/bin/python scripts/profile_atd.py
+
+# How the broadcast lines up with the tactical recording, and what it shows when
+.venv/bin/python scripts/broadcast_report.py
 
 # The tests
 .venv/bin/python -m pytest tests -q
@@ -88,6 +97,7 @@ models/possession.npz      the trained model
 possession/                everything used on the match
 training/                  everything that touches the public training games
 scripts/profile_atd.py     summary statistics of the real tracking
+scripts/broadcast_report.py  how the broadcast lines up, and what it adds
 tests/                     the checks
 ```
 
@@ -99,6 +109,7 @@ tests/                     the checks
 | `possession/decode.py` | turns frame probabilities into possessions |
 | `possession/model.py` | puts features, trees and decoder together |
 | `possession/smart_tagging.py`, `tags.py` | read the tags; use them for goals and restarts |
+| `possession/broadcast.py` | line the broadcast up with the tactical recording; turn its replays and close-ups into evidence of dead ball |
 | `possession/baseline.py` | the organisers' baseline on our arrays, to check the reader |
 | `possession/profile.py` | the summary statistics |
 | `possession/submission.py` | writes and checks the CSV |
@@ -125,6 +136,10 @@ often during stoppages.
 
 On the real match the baseline scores spellF1 0.2433 and macroF1 0.6724 (the organisers' figures),
 so our simulated games are about as hard for it as the real one.
+
+The broadcast step cannot be in this table: the public games have no broadcast feed. Its only
+labelled check is the public 5 minutes, where it raised dead-ball recall from 0.68 to 0.86
+(precision 0.96 before and after) and macroF1 from 0.85 to 0.90, and left spellF1 at 0.64.
 
 One experiment is worth keeping on record, because it shaped the model. The metric counts each
 possession once, however long it lasts, so we tried giving short possessions and short stoppages

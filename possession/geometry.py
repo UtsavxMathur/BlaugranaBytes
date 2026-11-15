@@ -16,6 +16,15 @@ def runs_of(mask):
     return edges[0::2], edges[1::2] - edges[0::2]
 
 
+def close_gaps(mask, frames):
+    """`mask` with every run of False shorter than `frames` between two True runs set True."""
+    out = np.array(mask, dtype=bool, copy=True)
+    for start, length in zip(*runs_of(~out)):
+        if length < frames and start > 0 and start + length < len(out):
+            out[start:start + length] = True
+    return out
+
+
 def to_metres(tracking):
     """(ball (n, 2), players (n, s, 2)) in metres, float32. NaN stays NaN."""
     scale = np.array(tracking.pitch, dtype=np.float64)

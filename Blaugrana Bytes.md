@@ -10,7 +10,9 @@ and where we know it still goes wrong.
 We could not learn from this match, so we learned from other matches. We took public games that
 come with a label on every frame, made their tracking look like the tracking we were given, and
 trained a classifier on them. A second step turns the classifier's frame-by-frame answers into
-whole possessions, and the Smart Tagging file helps us pin down restarts.
+whole possessions. Two more sources help that step: the Smart Tagging file pins down restarts,
+and the broadcast recording, once lined up with the tactical one, tells us when the TV pictures
+leave live play for a replay or a close-up, which is a strong sign that the ball is dead.
 
 ```
    TRAINING (public games only)                    LABELLING THE MATCH
@@ -32,9 +34,10 @@ whole possessions, and the Smart Tagging file helps us pin down restarts.
               |                                     +-----------------------+   Smart Tagging:
               v                                     | decoder: frames into  |<- kick-offs, goals,
    +------------------------+                       | whole possessions     |   set-piece restarts
-   | train two tree models, |                       +-----------------------+
-   | test on games left out |                                   |
-   +------------------------+                                   v
+   | train two tree models, |                       |                       |<- broadcast, lined up:
+   | test on games left out |                       +-----------------------+   replays, close-ups
+   +------------------------+                                   |
+                                                                v
                                                     one label per frame: H, A or D
 ```
 
@@ -73,8 +76,16 @@ The third lesson was about the metric. spellF1 counts each possession once, but 
 trained on frames sees a 40-second possession forty times more often than a 1-second one. We
 weight the training frames so that short possessions count as much as long ones.
 
-What we did not do is build our own ball detector from the video. With one week, we judged that
-the provided tracking plus an honest model of how it fails was the better bet.
+The last addition came after we had frozen a first version. The broadcast feed comes with its own
+tracking, and its homography is not valid on replays, close-ups and crowd shots, which mostly
+happen while the ball is dead. The feed is not synchronised with the tactical one, so we lined
+the two up from their tracking. What the director chose to show turned out to be the best
+evidence of a stoppage we had (section "The broadcast recording").
+
+What we did not do is build our own ball detector from the video. The broadcast tracking already
+gives a second camera's view of the ball, and it added little, because both cameras lose the
+ball at the same moments. We judged that the provided tracking plus an honest model of how it
+fails was the better bet.
 
 ## What we used from the bundle, and what we left out
 
@@ -85,9 +96,12 @@ the provided tracking plus an honest model of how it fails was the better bet.
 | `games.py` | yes | The frame ranges of the two halves, and the second-half kick-off. Frames before that kick-off are dead, as the FAQ says. |
 | Team tags on phases (Build Up, Progression, ...) | no | We checked them against the nearest player and they agree only 55-76% of the time. That is too weak to help. |
 | Free-kick tags | no | There are only five, and they do not agree on when the kick comes relative to the tag. |
-| Homography | no | The tactical camera does follow play, but the centre of the picture is typically 12 m from the ball. That is too rough to tell us where a missing ball is. |
+| Broadcast tracking | yes | Only to line the broadcast up with the tactical recording, and to tell live pictures from replays: during live play its players stand where the tactical players stand. |
+| Broadcast homography | yes | Its `valid` flag: no pitch in the picture means a close-up, a crowd shot or a replay. |
+| Broadcast ball | no | Where the tactical ball is missing, the broadcast has it on only 9% of frames. Both cameras lose the ball at the same moments. |
+| Tactical homography | no | The tactical camera does follow play, but the centre of the picture is typically 12 m from the ball. That is too rough to tell us where a missing ball is. |
 | Speed column of the tracking | no | It matches the speed we compute from positions to within 0.11 m/s, and computing it ourselves lets the same code run on the training games. |
-| Videos and broadcast tracking | no | We had no time for our own detector, and the broadcast feed is not synchronised with the tactical one. |
+| Videos | no | We never decode pixels. The two trackings carry what we need from the cameras. |
 
 This is how a set-piece tag helps. The tags start a fixed few seconds before the restart, and in
 the tracking the restart itself is easy to see: the ball goes from slow or unseen to fast. Left
@@ -119,8 +133,14 @@ We want to be clear about the public 5 minutes. We used them to confirm that our
 correct, and, as CHALLENGE.md suggests, to understand what the truth means by "dead". That is how
 we found the dead-ball problem described above. We fixed it by changing what the simulator does,
 and we judged every change on held-out public games. We did not fit any setting to the public
-window, and we did not pick between versions by their score on it. For the record, our five
-versions scored spellF1 0.51, 0.58, 0.56, 0.66 and 0.64 there, and we submit the last one.
+window, and we did not pick between versions by their score on it. For the record, our versions
+scored spellF1 0.51, 0.58, 0.56, 0.66 and 0.64 there.
+
+The broadcast step is the one exception to "judged on held-out games": the public games have no
+broadcast feed. Its settings are measured on the match itself without labels (section "The
+broadcast recording"), and before adding it we looked at what it did on the public window as a
+check. Dead-ball recall rose from 0.68 to 0.86 with precision unchanged at 0.96, macroF1 rose
+from 0.85 to 0.90, and spellF1 stayed at 0.64. That sixth version is the one we submit.
 
 ## The simulator
 
@@ -194,6 +214,50 @@ We train the trees with scikit-learn, then export them and run them ourselves in
 (`possession/trees.py`). Making the submission therefore needs only numpy and pandas, and the
 output is the same file on any machine.
 
+## The broadcast recording
+
+The broadcast feed has 164,488 frames on its own timeline, with cuts, replays and close-ups, and
+no table that maps it to the tactical frames. But its tracking puts players on the same pitch as
+the tactical tracking, so whenever the broadcast shows live play its players must stand where the
+tactical players stand at that moment. We use that to line the two up
+(`possession/broadcast.py`):
+
+1. Coarse: for every 5 minutes of broadcast, we try every shift in steps of one second and count
+   the seconds on which both ball tracks are within 3 m of each other. One shift wins clearly.
+2. Fine: for every 10 seconds of broadcast, we try shifts frame by frame near the coarse one and
+   keep the one at which the broadcast players are closest to the tactical players.
+3. A window that disagrees with its neighbours is dropped, and within each stretch the shift is
+   the running median of the rest.
+
+On this match the broadcast keeps a fixed delay within each half: 4,014 frames (2 min 40.6 s) in
+the first and 26,919 frames (17 min 56.8 s) in the second, where the halftime break was cut. On
+live pictures the two trackings put the players a median of 0.28 m apart. That gives every
+tactical frame a broadcast state: live pictures (61.6% of graded frames), a replay (2.2%: a pitch
+is shown but its players are somewhere else), no pitch at all (31.6%), unclear (2.8%) or no
+broadcast frame (1.7%).
+
+A director cuts away from live play a second or more after the ball goes dead, and often comes
+back only after the restart, while a replay finishes:
+
+```
+truth            H H H H H H|D D D D D D D D D D D D D D D D D D|A A A A A A A
+broadcast        live pictures   | replay, close-up, no pitch ......|...| live pictures
+                                 ^ cuts away after play stops         ^ often back only
+                                                                        after the restart
+evidence of D    ---------------- [ strong ................ | weaker ]  -------------
+```
+
+So a stretch of non-live pictures is evidence of a dead ball, weaker towards its end. How strong
+it is we measure on the match itself, without labels. For each stage of a stretch, counted back
+from the moment live pictures return, we compare how often the stage occurs on frames our model
+thinks are dead and on frames it thinks are live, using its probabilities as soft counts. More
+than 10 s before live pictures return the ratio is 17; in the 10 s before it falls to 5.6, 4.4
+and 3.1, because in 32 of 76 of our stoppages the replay was still running when we had play
+restart. In the decoder this ratio multiplies the odds of D (it is added as a cost to H and A),
+so a frame changes only where the model was unsure. On the full match it changed 1.05% of graded
+frames, all from live to dead; we end up with 343 possessions and 106 stoppages instead of 344
+and 103.
+
 ## Our possession rules
 
 We did not write the rules by hand; the model learned them from the labels. In practice they come
@@ -209,9 +273,10 @@ as many possessions as our Metrica labels contain. The very shortest ones, under
 still mostly merged into their neighbours.
 
 The ball is dead from the moment play stops until it is struck again. The model judges this
-mainly from the players: they slow down, and someone carries the ball to a spot. Three stretches
-are dead by definition: the second half before its kick-off, the time between a goal and the
-kick-off that follows, and the seconds before a set piece is taken.
+mainly from the players: they slow down, and someone carries the ball to a spot. A replay or
+close-up on the broadcast makes a dead ball more likely, less so in its last seconds. Three
+stretches are dead by definition: the second half before its kick-off, the time between a goal
+and the kick-off that follows, and the seconds before a set piece is taken.
 
 We never write X on a graded frame. On spellF1 it would only repeat our previous label, and on
 macroF1 it counts as a mistake.
@@ -244,23 +309,29 @@ DFL       ours      #############################     0.57
 
 So on games it has never seen, the model scores about twice what the baseline does. Please read
 this as an estimate. The tracking in these tests is simulated, and the Metrica labels are ones we
-derived ourselves.
+derived ourselves. The broadcast step is not in these numbers, because the public games have no
+broadcast feed; the public window is the only labelled check it has had (see "Training data").
 
 ## Where it still fails
 
 - Possessions shorter than about 2 seconds are mostly missed. In the Metrica labels they are a
   quarter of all possessions.
 - A stoppage of 5 or 6 seconds that shows up only as a ball gap looks just like play that went on
-  unseen, and we sometimes miss it.
-- When the ball stays in view, we tend to notice a stoppage two or three seconds late. A ball
-  passed around during a stoppage can still be read as a short possession.
+  unseen, and we sometimes miss it. The broadcast often stays on live pictures for those.
+- When the ball stays in view, we tend to notice a stoppage two or three seconds late. The
+  broadcast does not help with this: the director cuts away later than we notice. A ball passed
+  around during a stoppage can still be read as a short possession.
+- A replay shown while play goes on, for example while a goalkeeper holds the ball after a save,
+  pushes towards a dead ball. The model's own evidence usually outweighs it, but not always.
+- The broadcast line-up has only been tested on this match and on made-up data. The code allows
+  for cuts in the recording, but here there was a single fixed delay in each half.
 - Our simulator puts the ball near the touchlines about twice as often as the real tracker does.
 - The two training sources do not agree with each other, or exactly with the competition, on
   what counts as a change of possession. The DFL flags change on single touches more readily
   than the Metrica events do.
 
-With more time we would look at the broadcast feed (replays are a good sign of a stoppage), try
-detecting the ball in the tactical video ourselves, and add a second model that judges whole
+With more time we would try detecting the ball in the tactical video ourselves, find the start of
+a stoppage from the moment the ball crosses a line, and add a second model that judges whole
 candidate possessions and not single frames.
 
 ## Tools we used
@@ -269,21 +340,23 @@ We wrote the code with the help of an AI coding assistant (Claude Code, a hosted
 competition's terms forbid sending match data to such a service, and we did not. The assistant
 never read the `data/` folder, and every script that touches the match was run by a team member
 on their own machine. All the assistant saw of the match is what those scripts print: summary
-statistics over the whole match from `scripts/profile_atd.py`, and the counts, percentages and
-scores printed by `generate_submission.py`. No frame, position or tag was shared.
+statistics over the whole match from `scripts/profile_atd.py` and `scripts/broadcast_report.py`,
+and the counts, percentages and scores printed by `generate_submission.py`. No frame, position or
+tag was shared.
 
 ## Running it
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-lock.txt          # numpy and pandas, Python 3.11
-# unpack the data bundle into data/ (or set MTAH_DATA_DIR)
+# unpack the data bundle into data/, both tactical/ and broadcast/ (or set MTAH_DATA_DIR)
 .venv/bin/python generate_submission.py                 # writes "outputs/Blaugrana Bytes.csv"
 ```
 
 The command prints the SHA-256 of the file it wrote. Ours is
-`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`, and we got the same value
-from a fresh clone of the repository.
+`b08a4d78f28889f4719d9b3c5560887eb14b42aae0418ef43891b7838e08cde2`, and we got the same value
+from a fresh clone of the repository. With `--no-broadcast` it writes our earlier, tactical-only
+file (`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`).
 
 The trained model is in the repository (`models/possession.npz`). To train it again from the
 public games:
@@ -298,5 +371,6 @@ A retrained model can differ slightly from ours, because scikit-learn builds its
 several threads. The submitted file comes from the model in the repository.
 
 `.venv/bin/python -m pytest tests -q` runs our checks. Among other things they confirm that our
-reader and baseline give exactly what `starter/baseline.py` gives, and that running the trees in
-numpy gives exactly what scikit-learn gives.
+reader and baseline give exactly what `starter/baseline.py` gives, that running the trees in
+numpy gives exactly what scikit-learn gives, and that the broadcast line-up recovers a known
+delay, cut and mirrored axes on made-up recordings.

@@ -77,14 +77,18 @@ def probabilities(model, tracking):
     return out
 
 
-def decode_periods(prob, periods, prices, forced_dead=()):
+def decode_periods(prob, periods, prices, forced_dead=(), live_cost=None):
     """int8 codes (0 H, 1 A, 2 D, 3 X outside the halves) from frame probabilities.
 
     forced_dead  [(start, stop)] frame ranges known to be dead ball (e.g. before a kick-off).
+    live_cost    (n,) integer cost added to H and A on each frame: outside evidence that the
+                 ball is dead (broadcast.dead_evidence), or None.
     """
     labels = np.full(len(prob), 3, dtype=np.int8)
     for start, stop in periods:
         cost = decode.frame_costs(prob[start:stop], prices.get("cap", decode.CAP))
+        if live_cost is not None:
+            cost[:, :2] += live_cost[start:stop, None]
         for a, b in forced_dead:
             a, b = max(a, start), min(b, stop)
             if b > a:
