@@ -2,8 +2,8 @@
 
 training/sequence.py trains a temporal convolutional network in PyTorch. Floating-point matrix
 products can add up in a different order on another machine, and then a last digit, and so a
-decision, can change. So for the submission the network is stored with integer weights
-(models/sequence.npz) and run here in integer arithmetic only:
+decision, can change. So for the submission the networks are stored with integer weights
+(models/sequence.npz, models/sequence2.npz) and run here in integer arithmetic only:
 
     inputs and activations   real value x 2**SCALE_BITS, rounded down after every layer
     weights                  real value x 2**WEIGHT_BITS, rounded to the nearest integer
@@ -20,6 +20,9 @@ import numpy as np
 from .tracking import ROOT
 
 DEFAULT_PATH = os.path.join(ROOT, "models", "sequence.npz")
+# The submission averages two networks (phase 5): the first, and a second one trained the same
+# way plus event heads (dropped on export). The decoder prices of the last one are used.
+DEFAULT_PATHS = [DEFAULT_PATH, os.path.join(ROOT, "models", "sequence2.npz")]
 SCALE_BITS = 16
 WEIGHT_BITS = 16
 LIMIT = 1 << 42          # an activation this large would mean the weights are not what we trained
@@ -39,8 +42,11 @@ def from_torch(state, mean, std, stride, dilations):
     layers = [("inp", "inp")] + [("tap{}".format(i), "taps.{}".format(i)) for i in range(len(dilations))] \
         + [("mix{}".format(i), "mix.{}".format(i)) for i in range(len(dilations))] + [("out", "out")]
     for short, name in layers:
-        out[short + "_w"] = _quantise(tensor(name + ".weight"), WEIGHT_BITS)
-        out[short + "_b"] = _quantise(tensor(name + ".bias"), WEIGHT_BITS + SCALE_BITS)
+        weight, bias = tensor(name + ".weight"), tensor(name + ".bias")
+        if short == "out":                       # only dead? and home?; a side task is dropped
+            weight, bias = weight[:2], bias[:2]
+        out[short + "_w"] = _quantise(weight, WEIGHT_BITS)
+        out[short + "_b"] = _quantise(bias, WEIGHT_BITS + SCALE_BITS)
     return out
 
 

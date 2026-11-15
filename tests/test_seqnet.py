@@ -34,6 +34,20 @@ def test_whole_numbers_match_pytorch():
     assert np.abs(exact - floating).max() < 1e-3 * max(1.0, np.abs(floating).max())
 
 
+def test_several_networks_are_averaged_and_one_in_a_list_changes_nothing():
+    from possession import model as model_module
+    from possession.tracking import Tracking
+    from test_broadcast import PITCH, made_up_play
+    ball, players = made_up_play(2000, seed=8)
+    tracking = Tracking(ball=ball, players=players, team=np.repeat([0, 1], 11).astype(np.int8),
+                        pitch=PITCH, periods=[(0, 1000), (1000, 2000)])
+    trees = model_module.Model.load(model_module.DEFAULT_PATH)
+    first = seqnet.Network.load(seqnet.DEFAULT_PATH)
+    alone = model_module.probabilities(trees, tracking, first)
+    assert np.array_equal(alone, model_module.probabilities(trees, tracking, [first]))
+    assert np.array_equal(alone, model_module.probabilities(trees, tracking, [first, first]))
+
+
 def test_whole_numbers_are_repeatable_and_saved_exactly(tmp_path):
     net, scaler, integer, X = make(seed=1)
     path = tmp_path / "net.npz"
