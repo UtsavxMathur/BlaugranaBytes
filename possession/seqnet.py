@@ -39,8 +39,11 @@ def from_torch(state, mean, std, stride, dilations):
     layers = [("inp", "inp")] + [("tap{}".format(i), "taps.{}".format(i)) for i in range(len(dilations))] \
         + [("mix{}".format(i), "mix.{}".format(i)) for i in range(len(dilations))] + [("out", "out")]
     for short, name in layers:
-        out[short + "_w"] = _quantise(tensor(name + ".weight"), WEIGHT_BITS)
-        out[short + "_b"] = _quantise(tensor(name + ".bias"), WEIGHT_BITS + SCALE_BITS)
+        weight, bias = tensor(name + ".weight"), tensor(name + ".bias")
+        if short == "out":                       # only dead? and home?; a side task is dropped
+            weight, bias = weight[:2], bias[:2]
+        out[short + "_w"] = _quantise(weight, WEIGHT_BITS)
+        out[short + "_b"] = _quantise(bias, WEIGHT_BITS + SCALE_BITS)
     return out
 
 

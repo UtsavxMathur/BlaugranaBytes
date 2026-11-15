@@ -29,7 +29,7 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from possession import baseline, features, model as model_module  # noqa: E402
+from possession import baseline, features, geometry, model as model_module  # noqa: E402
 from possession.submission import pm  # noqa: E402
 from training import dataset, simulate, train  # noqa: E402
 
@@ -43,6 +43,13 @@ BATCH = 16
 STEPS = 1500             # gradient steps per model
 QUICK_STEPS = 60
 LEARNING_RATE = 1e-3
+# A side task (--aux): also predict where the true ball is, which the simulator knows even when
+# it hides the ball. Distances from the true ball to the nearest home and away player (log-scaled
+# up to AUX_CLIP_M), and whether it is in the air (DFL has the ball's height). Live play only.
+AUX = False
+AUX_WEIGHT = 0.5
+AUX_CLIP_M = 30.0
+AIR_M = 1.5
 WORK_DIR = os.path.join(ROOT, ".cache", "train_seq")
 OUT = os.path.join(ROOT, ".cache", "models", "sequence.pt")
 
@@ -59,17 +66,35 @@ def _copy(game, copy):
         tracking, labels, source = (features.swap_teams(tracking), train.swap_labels(labels),
                                     train.swap_labels(source))
     damaged = simulate.degrade(tracking, labels, regime, train.seed_of(game.name, "damage", copy))
-    return damaged, labels, source
+    return damaged, labels, source, tracking
+
+
+def ball_targets(tracking):
+    """(n, 3) float32 about the TRUE ball of a clean tracking: scaled distance to the nearest home
+    player and to the nearest away player, and 1 / 0 for a ball in the air. NaN where unknown."""
+    ball, players = geometry.to_metres(tracking)
+    near = geometry.team_distances(ball, players, tracking.team, k=1)[:, :, 0].astype(np.float64)
+    near[~np.isfinite(near)] = np.nan
+    scaled = np.log1p(np.minimum(near, AUX_CLIP_M)) / np.log1p(AUX_CLIP_M)
+    air = np.full(len(near), np.nan)
+    if tracking.ball_z is not None:
+        z = np.asarray(tracking.ball_z, dtype=np.float64)
+        air = np.where(np.isnan(z), np.nan, (z > AIR_M).astype(np.float64))
+    return np.column_stack([scaled, air]).astype(np.float32)
 
 
 def sequences(game, copy, spell_weight):
-    """One (features, labels, team weights, dead weights) tuple per half, at STRIDE."""
-    damaged, labels, source = _copy(game, copy)
+    """One (features, labels, team weights, dead weights, ball targets) tuple per half, at STRIDE."""
+    damaged, labels, source, clean = _copy(game, copy)
     X, _ = features.compute(damaged)
     weights = train.spell_weights(labels, damaged.fps, spell_weight, train.WEIGHT_CAP)
     dead_weights = train.spell_weights(source, damaged.fps, spell_weight, train.WEIGHT_CAP)
-    return [(X[a:b:STRIDE], labels[a:b:STRIDE], weights[a:b:STRIDE], dead_weights[a:b:STRIDE])
-            for a, b in damaged.periods]
+    targets = ball_targets(clean)
+    # Live play only: in a stoppage the simulator draws its own ball path (DFL parks the ball
+    # where play stopped, Metrica has none), so the clean tracking's ball is not the true one.
+    targets[(labels != H) & (labels != A)] = np.nan
+    return [(X[a:b:STRIDE], labels[a:b:STRIDE], weights[a:b:STRIDE], dead_weights[a:b:STRIDE],
+             targets[a:b:STRIDE]) for a, b in damaged.periods]
 
 
 class Scaler:
@@ -95,7 +120,7 @@ class Scaler:
 
 # -- the network -----------------------------------------------------------------------------------
 
-def network(n_in):
+def network(n_in, n_out=2):
     import torch
     from torch import nn
 
@@ -106,7 +131,7 @@ def network(n_in):
             self.taps = nn.ModuleList(nn.Conv1d(WIDTH, WIDTH, 3, dilation=d, padding=d)
                                       for d in DILATIONS)
             self.mix = nn.ModuleList(nn.Conv1d(WIDTH, WIDTH, 1) for _ in DILATIONS)
-            self.out = nn.Conv1d(WIDTH, 2, 1)          # dead? and home? scores (log-odds)
+            self.out = nn.Conv1d(WIDTH, n_out, 1)      # dead?, home? (log-odds) [, ball side task]
 
         def forward(self, x):                          # (batch, channels, steps)
             h = torch.relu(self.inp(x))
@@ -123,32 +148,36 @@ def _device():
 
 
 def fit(parts, steps, seed=0):
-    """Train one network on [(features, labels, weights, dead weights)] sequences."""
+    """Train one network on [(features, labels, weights, dead weights[, ball targets])] sequences.
+    With AUX, the ball targets are learned as a side task."""
     import torch
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     scaler = Scaler(np.concatenate([p[0] for p in parts]))
     half = CONTEXT // 2
     data = []
-    for X, labels, w, wd in parts:
+    for part in parts:
+        X, labels, w, wd = part[:4]
+        aux = part[4] if len(part) > 4 else np.full((len(labels), 3), np.nan, dtype=np.float32)
         pad = lambda a, value: np.concatenate(  # noqa: E731
             [np.full((half,) + a.shape[1:], value, a.dtype), a, np.full((half,) + a.shape[1:], value, a.dtype)])
         data.append((pad(scaler(X), 0), pad(labels, X_CODE), pad(w, 0).astype(np.float32),
-                     pad(wd, 0).astype(np.float32)))
+                     pad(wd, 0).astype(np.float32), pad(aux.astype(np.float32), np.nan)))
     lengths = np.array([len(d[1]) - 2 * half for d in data])
     pick = lengths / lengths.sum()
 
     device = _device()
-    net = network(data[0][0].shape[1]).to(device)
+    net = network(data[0][0].shape[1], 5 if AUX else 2).to(device)
     optimiser = torch.optim.Adam(net.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     span = WINDOW + 2 * half
     for step in range(steps):
-        xs, ys, ws, wds = [], [], [], []
+        xs, ys, ws, wds, auxs = [], [], [], [], []
         for k in rng.choice(len(data), size=BATCH, p=pick):
-            x, y, w, wd = data[k]
+            x, y, w, wd, aux = data[k]
             start = int(rng.integers(0, max(1, len(y) - span)))
-            for out_list, a, fill in ((xs, x, 0), (ys, y, X_CODE), (ws, w, 0), (wds, wd, 0)):
+            for out_list, a, fill in ((xs, x, 0), (ys, y, X_CODE), (ws, w, 0), (wds, wd, 0),
+                                      (auxs, aux, np.nan)):
                 part = a[start:start + span]
                 if len(part) < span:            # a half shorter than the window: unknown after it
                     part = np.concatenate([part, np.full((span - len(part),) + a.shape[1:],
@@ -164,12 +193,23 @@ def fit(parts, steps, seed=0):
         dead_loss = (loss_fn(out[:, 0], (y == D).float()) * wd * known).sum() / (wd * known).sum().clamp(min=1)
         home_loss = (loss_fn(out[:, 1], (y == H).float()) * w * live).sum() / (w * live).sum().clamp(min=1)
         loss = dead_loss + home_loss
+        aux_loss = torch.zeros((), device=device)
+        if AUX:
+            target = torch.from_numpy(np.stack(auxs))[:, half:-half].transpose(1, 2).to(device)
+            seen = ~torch.isnan(target)
+            clean = torch.nan_to_num(target)
+            near = torch.nn.functional.smooth_l1_loss(out[:, 2:4], clean[:, 0:2], reduction="none")
+            air = loss_fn(out[:, 4], clean[:, 2])
+            aux_loss = ((near * seen[:, 0:2]).sum() / seen[:, 0:2].sum().clamp(min=1)
+                        + (air * seen[:, 2]).sum() / seen[:, 2].sum().clamp(min=1))
+            loss = loss + AUX_WEIGHT * aux_loss
         optimiser.zero_grad()
         loss.backward()
         optimiser.step()
         if step % 250 == 0 or step == steps - 1:
-            print("    step {:>5}  loss dead {:.4f}  home {:.4f}".format(
-                step, dead_loss.item(), home_loss.item()), flush=True)
+            print("    step {:>5}  loss dead {:.4f}  home {:.4f}{}".format(
+                step, dead_loss.item(), home_loss.item(),
+                "  ball {:.4f}".format(aux_loss.item()) if AUX else ""), flush=True)
     return net.cpu().eval(), scaler
 
 
@@ -181,7 +221,7 @@ def scores(net, scaler, X):
     import torch
     with torch.no_grad():
         x = torch.from_numpy(scaler(X)).T[None]
-        return net(x)[0].T.numpy().astype(np.float64)
+        return net(x)[0, :2].T.numpy().astype(np.float64)
 
 
 def predict_probabilities(net, scaler, tracking):
@@ -318,12 +358,15 @@ def tune_and_bench(work_dir, sheet_name, compare_with):
 
 
 def main():
-    global WORK_DIR, OUT
+    global WORK_DIR, OUT, AUX
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--steps", nargs="+",
                         default=["cv", "tune", "bench", "int", "blend", "final"],
                         choices=["cv", "tune", "bench", "int", "blend", "final"])
     parser.add_argument("--compare", default="hybrid", help="score sheet to compare with")
+    parser.add_argument("--name", default="sequence", help="name of the score sheets written")
+    parser.add_argument("--aux", action="store_true",
+                        help="also learn where the true ball is, as a side task")
     parser.add_argument("--trees", default=os.path.join(ROOT, ".cache", "train_hybrid"),
                         help="held-out predictions of the tree model to blend with")
     parser.add_argument("--export", default=os.path.join(ROOT, ".cache", "models", "sequence.npz"),
@@ -332,7 +375,7 @@ def main():
     parser.add_argument("--work-dir", default=WORK_DIR)
     parser.add_argument("--out", default=OUT)
     args = parser.parse_args()
-    WORK_DIR, OUT = args.work_dir, args.out
+    WORK_DIR, OUT, AUX = args.work_dir, args.out, args.aux
     train.LABELS, train.FOLDS, train.WORK_DIR = "controlled", train.BASE_FOLDS, WORK_DIR
     games = [name for fold in train.FOLDS for name in fold]
 
@@ -356,11 +399,11 @@ def main():
         with open(os.path.join(WORK_DIR, "prices.json")) as handle:
             prices = json.load(handle)
         sheet = benchmark.run(WORK_DIR, prices)
-        sheet.update(name="sequence", prices=prices, labels=train.LABELS,
+        sheet.update(name=args.name, prices=prices, labels=train.LABELS,
                      work_dir=os.path.relpath(WORK_DIR, ROOT))
         benchmark.report(sheet)
         os.makedirs(benchmark.SHEETS, exist_ok=True)
-        with open(os.path.join(benchmark.SHEETS, "sequence.json"), "w") as handle:
+        with open(os.path.join(benchmark.SHEETS, args.name + ".json"), "w") as handle:
             json.dump(sheet, handle, indent=1, sort_keys=True, default=lambda value: value.item())
         reference = os.path.join(benchmark.SHEETS, args.compare + ".json")
         if os.path.isfile(reference):
@@ -372,7 +415,7 @@ def main():
     if "blend" in args.steps:
         print("blending with the trees and choosing prices on held-out games ...")
         blend_held_out(args.trees, WORK_DIR + "_int", WORK_DIR + "_blend", games)
-        tune_and_bench(WORK_DIR + "_blend", "sequence_blend", args.compare)
+        tune_and_bench(WORK_DIR + "_blend", args.name + "_blend", args.compare)
     if "final" in args.steps:
         import torch
         from possession import seqnet
@@ -383,7 +426,8 @@ def main():
             prices = json.load(handle)
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
         torch.save({"state": net.state_dict(), "scaler": scaler.state(), "prices": prices,
-                    "config": {"stride": STRIDE, "width": WIDTH, "dilations": list(DILATIONS)}},
+                    "config": {"stride": STRIDE, "width": WIDTH, "dilations": list(DILATIONS),
+                               "aux": AUX}},
                    OUT)
         print("wrote {}".format(os.path.relpath(OUT, ROOT)))
         blend_prices = os.path.join(WORK_DIR + "_blend", "prices.json")

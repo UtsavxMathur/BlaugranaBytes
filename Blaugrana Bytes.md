@@ -100,6 +100,14 @@ the two up from their tracking (section "The broadcast recording"). We then held
 its weights are measured on the provided match itself, and the organisers' clarification of 15
 November asks for every tuned value to come from external data.
 
+Two more ideas failed the held-out test, and we left them out. Twenty more public matches
+(SkillCorner's A-League open data, broadcast tracking at 10 frames per second) made the model
+worse on the held-out DFL and Metrica games, by 0.021 spellF1. Their off-screen players are
+estimated, and the model learned a team-shape cue from them that our tracking does not have. We
+also taught the sequence network to predict, as a side task, where the true ball is while the
+tracker has lost it (the simulator knows). The score moved by less than the noise, and the frames
+without a ball got no more accurate.
+
 What we did not do is build our own ball detector from the video. The broadcast tracking already
 gives a second camera's view of the ball, and it added little, because both cameras lose the
 ball at the same moments. We judged that the provided tracking plus an honest model of how it
