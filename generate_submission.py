@@ -31,7 +31,7 @@ import time
 
 import numpy as np
 
-from possession import baseline, broadcast, competition, geometry, model as model_module
+from possession import baseline, broadcast, competition, errors, geometry, model as model_module
 from possession import submission
 from possession import tags as tags_module
 from possession.submission import pm
@@ -217,6 +217,12 @@ def check_public(labels, model_name, tracking):
               "H {:.0%} / A {:.0%} / D {:.0%}".format(name, row["support"], row["precision"],
                                                        row["recall"], row["f1"], *went))
     codes = pm.label_codes(labels)
+    print("  spellF1 by IoU threshold: " + "  ".join(
+        "@{:.1f} {:.2f}".format(k, v["f1"]) for k, v in result["spell_f1"].items()))
+    runs = pm.valid_runs(truth)
+    for line in errors.describe(errors.taxonomy(truth, codes, runs),
+                                errors.summarise_edges(errors.edges(truth, codes, runs))):
+        print(line)
     window = truth != pm.X
     stops_true = len(geometry.runs_of(truth[window] == pm.D)[0])
     stops_ours = len(geometry.runs_of(codes[window] == pm.D)[0])
