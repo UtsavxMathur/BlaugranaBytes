@@ -57,6 +57,8 @@ BATCH = 16
 STEPS = 1500             # gradient steps per model
 QUICK_STEPS = 60
 LEARNING_RATE = 1e-3
+DROPOUT = 0.0            # on each layer's residual branch, in training only (--dropout)
+COSINE = False           # learning rate falling to 0 along a cosine over the steps (--cosine)
 # A side task (--aux): also predict where the true ball is, which the simulator knows even when
 # it hides the ball. Distances from the true ball to the nearest home and away player (log-scaled
 # up to AUX_CLIP_M), and whether it is in the air (DFL has the ball's height). Live play only.
@@ -171,11 +173,14 @@ def network(n_in, n_out=2):
                                       for d in DILATIONS)
             self.mix = nn.ModuleList(nn.Conv1d(WIDTH, WIDTH, 1) for _ in DILATIONS)
             self.out = nn.Conv1d(WIDTH, n_out, 1)      # dead?, home? (log-odds) [, ball side task]
+            if DROPOUT > 0:                             # no module at all otherwise: same as before
+                self.drop = nn.Dropout(DROPOUT)
 
         def forward(self, x):                          # (batch, channels, steps)
             h = torch.relu(self.inp(x))
             for tap, mix in zip(self.taps, self.mix):
-                h = h + mix(torch.relu(tap(h)))
+                branch = mix(torch.relu(tap(h)))
+                h = h + (self.drop(branch) if DROPOUT > 0 else branch)
             return self.out(torch.relu(h))
 
     return TCN()
@@ -221,6 +226,7 @@ def fit(parts, steps, seed=0):
     device = _device()
     net = network(data[0][0].shape[1], n_outputs()).to(device)
     optimiser = torch.optim.Adam(net.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=steps) if COSINE else None
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     span = WINDOW + 2 * half
     for step in range(steps):
@@ -267,6 +273,8 @@ def fit(parts, steps, seed=0):
         optimiser.zero_grad()
         loss.backward()
         optimiser.step()
+        if schedule is not None:
+            schedule.step()
         if step % 250 == 0 or step == steps - 1:
             print("    step {:>5}  loss dead {:.4f}  home {:.4f}{}{}".format(
                 step, dead_loss.item(), home_loss.item(),
@@ -463,7 +471,7 @@ def tune_and_bench(work_dir, sheet_name, compare_with):
 
 
 def main():
-    global WORK_DIR, OUT, AUX, CHANGE
+    global WORK_DIR, OUT, AUX, CHANGE, STEPS, WIDTH, DROPOUT, COSINE
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--steps", nargs="+",
                         default=["cv", "tune", "bench", "int", "blend", "final"],
@@ -484,11 +492,21 @@ def main():
     parser.add_argument("--prices", default=None,
                         help="decoder prices (JSON) stored with the exported network (default: "
                              "the blend's, <work dir>_blend/prices.json)")
+    parser.add_argument("--copies", type=int, default=train.COPIES,
+                        help="simulated copies of each training game")
+    parser.add_argument("--train-steps", type=int, default=STEPS, help="gradient steps per network")
+    parser.add_argument("--width", type=int, default=WIDTH, help="channels inside the network")
+    parser.add_argument("--dropout", type=float, default=DROPOUT,
+                        help="dropout on each layer's residual branch (training only)")
+    parser.add_argument("--cosine", action="store_true",
+                        help="learning rate falls to 0 along a cosine over the steps")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--work-dir", default=WORK_DIR)
     parser.add_argument("--out", default=OUT)
     args = parser.parse_args()
     WORK_DIR, OUT, AUX, CHANGE = args.work_dir, args.out, args.aux, args.change
+    STEPS, WIDTH, DROPOUT, COSINE = args.train_steps, args.width, args.dropout, args.cosine
+    train.COPIES = args.copies
     train.LABELS, train.FOLDS, train.WORK_DIR = "controlled", train.BASE_FOLDS, WORK_DIR
     games = [name for fold in train.FOLDS for name in fold]
 
@@ -540,7 +558,8 @@ def main():
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
         torch.save({"state": net.state_dict(), "scaler": scaler.state(), "prices": prices,
                     "config": {"stride": STRIDE, "width": WIDTH, "dilations": list(DILATIONS),
-                               "aux": AUX, "change": CHANGE}},
+                               "aux": AUX, "change": CHANGE, "copies": train.COPIES,
+                               "steps": STEPS, "dropout": DROPOUT, "cosine": COSINE}},
                    OUT)
         print("wrote {}".format(os.path.relpath(OUT, ROOT)))
         blend_prices = args.prices or os.path.join(WORK_DIR + "_blend", "prices.json")

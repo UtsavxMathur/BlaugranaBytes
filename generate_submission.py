@@ -9,11 +9,12 @@ and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for 
 
   --model possession   our model, trained on public games only: the trees in
                        models/possession.npz blended with two sequence networks
-                       (models/sequence.npz, models/sequence2.npz), which run in whole numbers
-                       (possession/seqnet.py). The trees count for half, the networks for a
-                       quarter each.
-  --sequence FILE ..   other sequence networks; --sequence models/sequence.npz alone gives our
-                       Phase 3 file (sha256 dfa6bf3e...877d785).
+                       (models/sequence_wide.npz, models/sequence2.npz), which run in whole
+                       numbers (possession/seqnet.py). The trees count for half, the networks
+                       for a quarter each.
+  --sequence FILE ..   other sequence networks: --sequence models/sequence.npz models/sequence2.npz
+                       gives the version before the wide network (sha256 5b6400a1...46205), and
+                       --sequence models/sequence.npz alone our Phase 3 file (dfa6bf3e...877d785).
   --no-sequence        trees only: our Phase 1 file (sha256 0674c775...3afa24).
   --model-file FILE    another tree model; with --no-sequence, models/possession_v1.npz gives our
                        first submission (sha256 a320484e...29f5d).

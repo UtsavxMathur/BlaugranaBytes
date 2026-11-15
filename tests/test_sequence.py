@@ -64,6 +64,29 @@ def test_event_heads_mark_changes_stoppages_restarts_and_ignore_the_team_swap(mo
     assert np.allclose(p, q, atol=1e-12)
 
 
+def test_recipe_options_train_and_export_exactly(monkeypatch):
+    from possession import seqnet
+    from training import sequence
+    ball, players = made_up_play(3000, seed=6)
+    tracking = Tracking(ball=ball, players=players, team=np.repeat([0, 1], 11).astype(np.int8),
+                        pitch=PITCH, periods=[(0, 1500), (1500, 3000)])
+    X, _ = features.compute(tracking)
+    labels = np.where(np.arange(3000) % 600 < 300, 0, 1).astype(np.int8)
+    ones = np.ones(3000, dtype=np.float32)
+    step = sequence.STRIDE
+    parts = [(X[a:b:step], labels[a:b:step], ones[a:b:step], ones[a:b:step])
+             for a, b in tracking.periods]
+    for name, value in (("WIDTH", 32), ("DROPOUT", 0.1), ("COSINE", True)):
+        monkeypatch.setattr(sequence, name, value)
+    net, scaler = sequence.fit(parts, steps=4)
+    assert net.out.in_channels == 32 and hasattr(net, "drop") and not net.training
+    floating = sequence.scores(net, scaler, X[0:1500:step])
+    integer = seqnet.Network(seqnet.from_torch(net.state_dict(), scaler.mean, scaler.std, step,
+                                               sequence.DILATIONS))
+    exact = integer.scores(X[0:1500:step])
+    assert np.abs(exact - floating).max() < 1e-3 * max(1.0, np.abs(floating).max())
+
+
 def test_ball_side_task_learns_and_is_left_out_of_the_whole_number_network(monkeypatch):
     from possession import seqnet
     from training import sequence
