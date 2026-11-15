@@ -1,10 +1,11 @@
 """Download the PUBLIC games we train and validate on. None of this is competition data.
 
-    python training/fetch.py                  # everything, about 2.8 GB
+    python training/fetch.py                  # everything, about 4.7 GB
     python training/fetch.py --only metrica   # 190 MB
     python training/fetch.py --only dfl       # 2.6 GB
+    python training/fetch.py --only skillcorner   # 1.8 GB
 
-Two open datasets, both about OTHER matches (which RULES.md allows):
+Three open datasets, all about OTHER matches (which RULES.md allows):
 
   Metrica Sports sample data, 3 games.  github.com/metrica-sports/sample-data
       Same vendor and file formats as the competition tracking. Has event data, no frame labels.
@@ -13,6 +14,11 @@ Two open datasets, both about OTHER matches (which RULES.md allows):
       doi.org/10.6084/m9.figshare.28196177, licence CC-BY 4.0.
       Official tracking at 25 fps with, on EVERY frame, the team in possession and whether the
       ball is in play -- the same kind of label the competition is scored on.
+
+  SkillCorner open data, 20 A-League matches of 2024/25.  github.com/SkillCorner/opendata,
+      MIT licence. Broadcast tracking at 10 fps with the ball (and its height), the player and
+      team in possession on every frame, and phases of play that cover exactly the time the
+      ball is in play.
 
 Files land in .cache/public/ (gitignored). Set PUBLIC_DATA_DIR to put them elsewhere. A file that
 is already complete is not downloaded again.
@@ -72,6 +78,41 @@ DFL = {
 }
 
 
+# -- SkillCorner: match id -> (tracking sha256, tracking bytes, match.json bytes, phases bytes),
+# pinned to one commit of github.com/SkillCorner/opendata (MIT licence). The tracking files are
+# stored with Git LFS, so they come from media.githubusercontent.com; the sha256 is the LFS oid.
+SKILLCORNER_COMMIT = "4340d274572876239c154c90bc507a9b3250a656"
+SKILLCORNER_RAW = "https://raw.githubusercontent.com/SkillCorner/opendata/{}/data/matches/{}/{}_{}"
+SKILLCORNER_LFS = "https://media.githubusercontent.com/media/SkillCorner/opendata/{}/data/matches/{}/{}_{}"
+SKILLCORNER = {
+    1874553: ("ea97f58f8eaad925feaeacc6395ec24860dd80027af8a89450276adebd29d265", 90729279, 33730, 115978),
+    1886347: ("3577e2803da95390f8b2f85d47829eb55fbbfee6211c94adc65db0dc78e46b41", 89280839, 27541, 121864),
+    1899585: ("90b6289ec2181192d1793ec6240fbbe8225ff0219c7956710c6278c31a661100", 85550410, 27810, 119735),
+    1925299: ("48528be40ad82fa3e2b232e1af8d311705f7d6d119925ef199d2b59ea36fd3c9", 97091519, 28396, 131104),
+    1927964: ("858c7a756ca3d33017f864775af5999d2c0f364e58ab60ae040c8b9ebab17827", 91049828, 33400, 117263),
+    1953632: ("1c2014f97c3eff1ce2475203512c9d126930d7599c036105c9ac442d1de1667e", 90027965, 27767, 114478),
+    1959846: ("5ba2d87f6fd1ba3138301b369bd9266be69416a2d799a3fba5b5ec8a52e1284b", 87710167, 32946, 128571),
+    1986691: ("630e946950fe459f5e48872b01a36e6dfc319cf9027e7b98156150bb6e2c30f6", 88531597, 33792, 115267),
+    1996435: ("f42764d8bde290e8f738fa21141cadbed75408314b0b337bbf1d5a3444540a02", 88634016, 27830, 120335),
+    1996436: ("fab9d331e06f3042c83ac17798901b49bb259c99a8f3b319cd0146263cde65e7", 88945845, 32859, 104584),
+    2006229: ("3ee193ba01f1fe2cbce087eca8a881c21b8b0ea3485ae6c3d7e32e8b2f51e738", 90078007, 28213, 122340),
+    2006363: ("61dfdbd83f8e654127b249b8503f062338c14ec0c9e65404bcf70fb7c1346bd4", 90591887, 33294, 119862),
+    2007448: ("12d00d6e4257218812df6e4c4263c49387ba0313a83ff8d826c4416828f9c798", 90025383, 32670, 113871),
+    2007721: ("fea913b8d4cbde8d85c6bdf5f1a4b3fd203b78227e976a171c8ab0946705d378", 92872706, 33745, 116997),
+    2010085: ("04562d9754b2977c80430535e9b5733426bc4ce910db56fe7a3760876211ac5a", 92516156, 33744, 115871),
+    2011166: ("8ec2937050930d87e4f52b2d65515f70ef8edd0ae2814bf40155c4448133390e", 87441570, 28420, 121175),
+    2013725: ("13eb83329814ed5f5d73da8f8ab5c5979d6c8a7858e89e28a7fa8072f91fb250", 96059074, 27899, 130821),
+    2015213: ("413990d0024d84856ce1f2a16866b8887472c0cea22c61caef0d1f46505a609e", 102030769, 27937, 134493),
+    2016236: ("d78555f9dfd7d1ce9de38066d3c98e6d54417c6d45d73b1f1ce7e26f07263d8f", 94737872, 33791, 133630),
+    2017461: ("59cfa5588efee041da439f44df5b5b92f2b7305571dc831164e3d05f7415787a", 89543442, 28545, 118313),
+}
+SKILLCORNER_FILES = ("match.json", "phases_of_play.csv", "tracking_extrapolated.jsonl")
+
+
+def skillcorner_path(match, name, root=PUBLIC_DIR):
+    return os.path.join(root, "skillcorner", str(match), "{}_{}".format(match, name))
+
+
 def metrica_path(game, name, root=PUBLIC_DIR):
     return os.path.join(root, "metrica", "Sample_Game_{}".format(game), name)
 
@@ -97,7 +138,15 @@ def _md5(path):
     return digest.hexdigest()
 
 
-def _download(url, path, size=None, md5=None):
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download(url, path, size=None, md5=None, sha256=None):
     """Fetch url to path unless a complete copy is already there. Checks size and/or md5."""
     name = os.path.basename(path)
     if os.path.isfile(path) and (size is None or os.path.getsize(path) == size):
@@ -124,6 +173,9 @@ def _download(url, path, size=None, md5=None):
         raise IOError("{}: expected {} bytes, got {}".format(name, size, os.path.getsize(partial)))
     if md5 is not None and _md5(partial) != md5:
         raise IOError("{}: md5 mismatch, the download is corrupt. Delete it and retry.".format(name))
+    if sha256 is not None and _sha256(partial) != sha256:
+        raise IOError("{}: sha256 mismatch, the download is corrupt. Delete it and retry."
+                      .format(name))
     os.replace(partial, path)
 
 
@@ -142,13 +194,29 @@ def fetch_dfl(root=PUBLIC_DIR, matches=None):
             _download(DFL_URL.format(file_id), dfl_path(match, kind, root), md5=md5)
 
 
+def fetch_skillcorner(root=PUBLIC_DIR, matches=None):
+    for match in matches or sorted(SKILLCORNER):
+        print("SkillCorner match {}".format(match))
+        sha, size, match_size, phases_size = SKILLCORNER[match]
+        for name, file_size in (("match.json", match_size), ("phases_of_play.csv", phases_size)):
+            _download(SKILLCORNER_RAW.format(SKILLCORNER_COMMIT, match, match, name),
+                      skillcorner_path(match, name, root), size=file_size)
+        _download(SKILLCORNER_LFS.format(SKILLCORNER_COMMIT, match, match,
+                                         "tracking_extrapolated.jsonl"),
+                  skillcorner_path(match, "tracking_extrapolated.jsonl", root), size=size,
+                  sha256=sha)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--only", choices=["metrica", "dfl"], help="fetch just one dataset")
+    parser.add_argument("--only", choices=["metrica", "dfl", "skillcorner"],
+                        help="fetch just one dataset")
     parser.add_argument("--dir", default=PUBLIC_DIR)
     args = parser.parse_args()
-    if args.only != "dfl":
+    if args.only in (None, "metrica"):
         fetch_metrica(args.dir)
-    if args.only != "metrica":
+    if args.only in (None, "dfl"):
         fetch_dfl(args.dir)
+    if args.only in (None, "skillcorner"):
+        fetch_skillcorner(args.dir)
     sys.exit(0)

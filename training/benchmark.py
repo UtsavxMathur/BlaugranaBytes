@@ -153,10 +153,12 @@ def main():
     parser.add_argument("--compare", metavar="NAME", help="compare with a saved score sheet")
     parser.add_argument("--labels", default="source", choices=dataset.CONVENTIONS,
                         help="the label convention to score against (training/ownership.py)")
+    parser.add_argument("--games", default="base", choices=sorted(train.GAME_SETS),
+                        help="base: the 7 DFL and 3 Metrica games; all: also the 20 SkillCorner")
     args = parser.parse_args()
 
     started = time.time()
-    train.LABELS = args.labels
+    train.LABELS, train.FOLDS = args.labels, train.GAME_SETS[args.games]
     prices = model_module.Model.load(args.model_file).prices
     sheet = run(args.work_dir, prices)
     sheet.update(name=args.save or "current", prices=prices, labels=args.labels,

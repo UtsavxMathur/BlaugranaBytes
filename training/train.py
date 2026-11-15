@@ -32,14 +32,25 @@ from possession.submission import pm  # noqa: E402
 from training import dataset, simulate  # noqa: E402
 
 WORK_DIR = os.path.join(ROOT, ".cache", "train")
-FOLDS = [["dfl-J03WMX", "metrica-1"], ["dfl-J03WN1", "metrica-2"], ["dfl-J03WOH", "metrica-3"],
-         ["dfl-J03WOY", "dfl-J03WPY"], ["dfl-J03WQQ", "dfl-J03WR9"]]
+BASE_FOLDS = [["dfl-J03WMX", "metrica-1"], ["dfl-J03WN1", "metrica-2"],
+              ["dfl-J03WOH", "metrica-3"], ["dfl-J03WOY", "dfl-J03WPY"],
+              ["dfl-J03WQQ", "dfl-J03WR9"]]
+# With the SkillCorner games, four more per fold; the original ten keep their folds, so their
+# held-out predictions can be compared game by game with a model trained without SkillCorner.
+ALL_FOLDS = [fold + dataset.SKILLCORNER_GAMES[k::len(BASE_FOLDS)]
+             for k, fold in enumerate(BASE_FOLDS)]
+SEEN_FOLDS = [fold + dataset.SKILLCORNER_SEEN_GAMES[k::len(BASE_FOLDS)]
+              for k, fold in enumerate(BASE_FOLDS)]
+FOLDS = BASE_FOLDS
+GAME_SETS = {"base": BASE_FOLDS, "all": ALL_FOLDS, "seen": SEEN_FOLDS}
 COPIES = 3            # rendered copies of each training game (odd copies have the teams swapped)
 THIN = 4              # keep every 4th frame for training
 SPELL_WEIGHT_S = 12.0 # segments shorter than this many seconds are up-weighted (0 = off)
 WEIGHT_CAP = 8.0      # ... by at most this factor
 H, A, D, X = 0, 1, 2, 3
 LABELS = "source"       # label convention of the public games (training/dataset.py CONVENTIONS)
+DEAD_WEIGHTS = "labels"  # weight the "dead?" frames by segments of the training labels, or of the
+                         # labels as given ("source"): the convention changes owners, not dead ball
 
 # Decoder settings tried on the held-out predictions (see possession/decode.py).
 CAPS = (200, 600, 1200)
@@ -77,17 +88,21 @@ def spell_weights(labels, fps, reference_s, most):
 
 
 def training_rows(game, copy, spell_weight=0.0):
-    """(X, labels, weights, names) for one damaged copy of a game, thinned."""
+    """(X, labels, weights, dead weights, names) for one damaged copy of a game, thinned."""
     rng = np.random.default_rng(seed_of(game.name, "regime", copy))
     regime = simulate.Regime.random(rng)
     tracking, labels = game.tracking, game.labels
+    source = game.source_labels if game.source_labels is not None else labels
     if copy % 2 == 1:
-        tracking, labels = features.swap_teams(tracking), swap_labels(labels)
+        tracking, labels, source = (features.swap_teams(tracking), swap_labels(labels),
+                                    swap_labels(source))
     damaged = simulate.degrade(tracking, labels, regime, seed_of(game.name, "damage", copy))
     X, names = features.compute(damaged)
     rows = np.flatnonzero(tracking.in_periods() & (labels != X_CODE))[copy % THIN::THIN]
     weights = spell_weights(labels, tracking.fps, spell_weight, WEIGHT_CAP)
-    return X[rows], labels[rows], weights[rows], names
+    dead_weights = (spell_weights(source, tracking.fps, spell_weight, WEIGHT_CAP)
+                    if DEAD_WEIGHTS == "source" else weights)
+    return X[rows], labels[rows], weights[rows], dead_weights[rows], names
 
 
 X_CODE = X  # (the name X is used for feature matrices below)
@@ -102,14 +117,16 @@ def fit(X, y, weight, quick):
 
 
 def fit_heads(parts, quick):
-    """Train the two ensembles on a list of (X, labels, game index) parts."""
+    """Train the two ensembles on a list of (X, labels, weights, dead weights) parts."""
     X = np.concatenate([p[0] for p in parts])
     labels = np.concatenate([p[1] for p in parts])
-    weight = np.concatenate([p[2] / p[2].sum() for p in parts])   # every game copy counts the same
-    weight *= len(weight) / weight.sum()
-    dead = fit(X, labels == D, weight, quick)
+    weights = []
+    for k in (2, 3):
+        w = np.concatenate([p[k] / p[k].sum() for p in parts])   # every game copy counts the same
+        weights.append(w * (len(w) / w.sum()))
+    dead = fit(X, labels == D, weights[1], quick)
     live = labels != D
-    team = fit(X[live], labels[live] == H, weight[live], quick)
+    team = fit(X[live], labels[live] == H, weights[0][live], quick)
     return dead, team
 
 
@@ -158,8 +175,8 @@ def step_rows(games, quick, spell_weight=0.0):
         started = time.time()
         rows[name] = []
         for copy in range(1 if quick else COPIES):
-            X, labels, weights, names = training_rows(game, copy, spell_weight)
-            rows[name].append((X, labels, weights))
+            X, labels, weights, dead_weights, names = training_rows(game, copy, spell_weight)
+            rows[name].append((X, labels, weights, dead_weights))
         print("  rows {:<12} {:>7} rows  ({:.0f} s)".format(
             name, sum(len(r[1]) for r in rows[name]), time.time() - started), flush=True)
     return rows, names
@@ -270,7 +287,7 @@ def step_final(rows, names, prices, quick, path, spell_weight=0.0):
     check_export(dead, parts[0][0])
     check_export(team, parts[0][0])
     info = {"games": sorted(rows), "copies": 1 if quick else COPIES, "thin": THIN,
-            "labels": LABELS,
+            "labels": LABELS, "dead_weights": DEAD_WEIGHTS,
             "spell_weight_s": float(spell_weight),
             "rows": int(sum(len(p[1]) for p in parts)), "quick": bool(quick),
             "top_features_dead": top_features(dead, names),
@@ -293,7 +310,7 @@ def step_final(rows, names, prices, quick, path, spell_weight=0.0):
 
 
 def main():
-    global LABELS, WEIGHT_CAP, WORK_DIR
+    global LABELS, WEIGHT_CAP, WORK_DIR, DEAD_WEIGHTS, FOLDS
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--steps", nargs="+", default=["cv", "tune", "final"],
                         choices=["cv", "tune", "final"])
@@ -307,8 +324,13 @@ def main():
     parser.add_argument("--labels", default=LABELS, choices=dataset.CONVENTIONS,
                         help="label convention: as the files give it, or controlled possession "
                              "(training/ownership.py)")
+    parser.add_argument("--dead-weights", default=DEAD_WEIGHTS, choices=["labels", "source"],
+                        help="weight the dead? frames by the training labels or by the labels "
+                             "as given")
+    parser.add_argument("--games", default="base", choices=sorted(GAME_SETS),
+                        help="base: the 7 DFL and 3 Metrica games; all: also the 20 SkillCorner")
     args = parser.parse_args()
-    LABELS = args.labels
+    LABELS, DEAD_WEIGHTS, FOLDS = args.labels, args.dead_weights, GAME_SETS[args.games]
     if args.weight_cap:
         WEIGHT_CAP = args.weight_cap
     if args.work_dir:

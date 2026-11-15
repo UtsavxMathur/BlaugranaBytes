@@ -12,11 +12,16 @@ import os
 import numpy as np
 
 from possession.tracking import Tracking, cache_path
-from training import dfl, fetch, metrica
+from training import dfl, fetch, metrica, skillcorner
 
 DFL_GAMES = ["dfl-" + match for match in sorted(fetch.DFL)]
 METRICA_GAMES = ["metrica-{}".format(game) for game in sorted(fetch.METRICA)]
+SKILLCORNER_GAMES = ["skillcorner-{}".format(match) for match in sorted(fetch.SKILLCORNER)]
+# The same matches with only what the camera saw: SkillCorner's estimates for players and ball
+# off screen left out (training/skillcorner.py, seen_only).
+SKILLCORNER_SEEN_GAMES = ["skillcornerseen-{}".format(match) for match in sorted(fetch.SKILLCORNER)]
 ALL_GAMES = DFL_GAMES + METRICA_GAMES
+EVERY_GAME = ALL_GAMES + SKILLCORNER_GAMES
 
 
 @dataclasses.dataclass
@@ -24,6 +29,7 @@ class Game:
     name: str
     tracking: Tracking      # as delivered: clean, with (nearly) every ball position
     labels: np.ndarray      # int8 (n,): 0 = H, 1 = A, 2 = D, 3 = X (unknown / outside the halves)
+    source_labels: np.ndarray = None   # the labels as the files give them, if `labels` differ
 
     @property
     def source(self):
@@ -34,6 +40,8 @@ def _sources(name, root):
     kind, key = name.split("-", 1)
     if kind == "dfl":
         paths = [fetch.dfl_path(key, "info", root), fetch.dfl_path(key, "positions", root)]
+    elif kind in ("skillcorner", "skillcornerseen"):
+        paths = [fetch.skillcorner_path(int(key), file, root) for file in fetch.SKILLCORNER_FILES]
     else:
         paths = [fetch.metrica_path(int(key), file, root) for file in fetch.METRICA[int(key)]]
     missing = [path for path in paths if not os.path.isfile(path)]
@@ -50,7 +58,8 @@ def load(name, root=fetch.PUBLIC_DIR, use_cache=True, verbose=True, labels="sour
     game = _load(name, root, use_cache, verbose)
     if labels == "controlled":
         from training import ownership
-        game = Game(name, game.tracking, ownership.relabel(game.tracking, game.labels)[0])
+        game = Game(name, game.tracking, ownership.relabel(game.tracking, game.labels)[0],
+                    source_labels=game.labels)
     elif labels != "source":
         raise ValueError("labels must be one of {}".format(CONVENTIONS))
     return game
@@ -68,6 +77,9 @@ def _load(name, root, use_cache, verbose):
     kind, key = name.split("-", 1)
     if kind == "dfl":
         tracking, labels = dfl.load(paths[0], paths[1], verbose=verbose)
+    elif kind in ("skillcorner", "skillcornerseen"):
+        tracking, labels = skillcorner.load(dict(zip(fetch.SKILLCORNER_FILES, paths)),
+                                            verbose=verbose, seen_only=kind == "skillcornerseen")
     else:
         files = dict(zip(fetch.METRICA[int(key)], paths))
         tracking, labels = metrica.load(int(key), files, verbose=verbose)
