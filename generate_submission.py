@@ -8,8 +8,12 @@ Reads data/tactical/ (or $MTAH_DATA_DIR), writes the CSV, runs the official form
 and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for byte.
 
   --model possession   our model, trained on public games only: the trees in
-                       models/possession.npz blended with the sequence network in
-                       models/sequence.npz, which runs in whole numbers (possession/seqnet.py).
+                       models/possession.npz blended with two sequence networks
+                       (models/sequence.npz, models/sequence2.npz), which run in whole numbers
+                       (possession/seqnet.py). The trees count for half, the networks for a
+                       quarter each.
+  --sequence FILE ..   other sequence networks; --sequence models/sequence.npz alone gives our
+                       Phase 3 file (sha256 dfa6bf3e...877d785).
   --no-sequence        trees only: our Phase 1 file (sha256 0674c775...3afa24).
   --model-file FILE    another tree model; with --no-sequence, models/possession_v1.npz gives our
                        first submission (sha256 a320484e...29f5d).
@@ -119,8 +123,8 @@ def predict(model_name, tracking, model_path, tags=None, alignment=None, network
     """(label letters for every frame, frame probabilities or None).
 
     alignment     a broadcast.Alignment: use the broadcast pictures as evidence of dead ball.
-    network_path  a sequence network file (possession/seqnet.py): blended with the trees, and
-                  its decoder prices are used.
+    network_path  a sequence network file (possession/seqnet.py), or a list of them: blended
+                  with the trees, and the decoder prices of the last one are used.
     """
     if model_name == "baseline":
         return baseline.predict(tracking), None
@@ -130,13 +134,16 @@ def predict(model_name, tracking, model_path, tags=None, alignment=None, network
     model = model_module.Model.load(model_path)
     prices, network = model.prices, None
     if network_path is not None:
-        if not os.path.isfile(network_path):
-            raise SystemExit("{} not found".format(show_path(network_path)))
-        network = seqnet.Network.load(network_path)
-        prices = network.prices
+        paths = [network_path] if isinstance(network_path, str) else list(network_path)
+        for path in paths:
+            if not os.path.isfile(path):
+                raise SystemExit("{} not found".format(show_path(path)))
+        network = [seqnet.Network.load(path) for path in paths]
+        prices = network[-1].prices
     print("  model trained on {} public games{}, decoder prices {}".format(
         len(model.info.get("games", [])),
-        " + sequence network {}".format(show_path(network_path)) if network else "", prices))
+        " + sequence network{} {}".format("s" if len(network) > 1 else "", ", ".join(
+            show_path(p) for p in paths)) if network else "", prices))
     prob = model_module.probabilities(model, tracking, network)
     codes = decode(prob, tracking, prices, tags, verbose=alignment is None)
     if alignment is not None:
@@ -292,8 +299,9 @@ def main():
                         help="ignore the Smart Tagging file (model output only)")
     parser.add_argument("--drift", action="store_true",
                         help="print each feature's percentiles here next to training's")
-    parser.add_argument("--sequence", metavar="FILE", default=seqnet.DEFAULT_PATH,
-                        help="the sequence network blended with the trees (possession/seqnet.py)")
+    parser.add_argument("--sequence", metavar="FILE", nargs="+", default=seqnet.DEFAULT_PATHS,
+                        help="the sequence network(s) blended with the trees (possession/seqnet.py); "
+                             "the decoder prices of the last one are used")
     parser.add_argument("--no-sequence", action="store_true",
                         help="trees only (gives our Phase 1 file)")
     parser.add_argument("--broadcast", action="store_true",

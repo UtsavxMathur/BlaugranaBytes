@@ -10,11 +10,11 @@ untouched. We only added a pointer at the top of `README.md` and a few lines to 
 ## What happens when you run it
 
 ```
-data/tactical/ (the match)       models/possession.npz (trees) + models/sequence.npz (network)
-        |                                          |
+data/tactical/ (the match)       models/possession.npz (trees) + models/sequence.npz,
+        |                                          models/sequence2.npz (two networks)
         v                                          v
   read the tracking  -->  ~110 numbers per frame  -->  "dead?" and "home?" for every frame,
-                                                       the two models' answers averaged
+                                                       the models' answers averaged (trees 1/2)
                                                                  |
   read Smart Tagging  -->  kick-offs, goals, restarts  -->  decoder: frames into possessions
                                                                  |
@@ -40,12 +40,14 @@ use the videos.
 ```
 
 This writes `outputs/Blaugrana Bytes.csv`, runs the official format check on it and prints its
-SHA-256. It takes about 40 seconds. Only numpy and pandas are needed: the trained trees are
-stored in `models/possession.npz` and the sequence network in `models/sequence.npz` with whole
-numbers for weights, and we run both ourselves in numpy (the network in integer arithmetic), so a
-fresh clone gives the same file, byte for byte. Our checksum is in the technical document.
+SHA-256. It takes about 45 seconds. Only numpy and pandas are needed: the trained trees are
+stored in `models/possession.npz` and the two sequence networks in `models/sequence.npz` and
+`models/sequence2.npz` with whole numbers for weights, and we run them ourselves in numpy (the
+networks in integer arithmetic), so a fresh clone gives the same file, byte for byte. Our
+checksum is in the technical document.
 
-`--no-sequence` leaves the network out and writes our second submission; adding
+`--sequence models/sequence.npz` uses only the first network and writes our third submission;
+`--no-sequence` leaves both networks out and writes our second; adding
 `--model-file models/possession_v1.npz` writes our first, with the model trained on the labels as
 the files give them.
 
@@ -92,6 +94,10 @@ or positions.
 .venv/bin/python training/combine.py      # writes models/possession.npz
 # 4. the sequence network, blended with those trees; prices chosen on held-out games (~20 min)
 .venv/bin/python training/sequence.py --export models/sequence.npz
+# 5. the second network (also trained with event heads, which are dropped), averaged in;
+#    the decoder prices of the final blend are chosen on held-out games (~20 min)
+.venv/bin/python training/sequence.py --change --with .cache/train_seq_int --name sequence2 \
+    --work-dir .cache/train_seq_change --out .cache/models/sequence2.pt --export models/sequence2.npz
 ```
 
 Each training run tests the model on games it has not seen, picks the decoder settings on those,
@@ -113,7 +119,8 @@ More scripts for changing the simulator or the model:
 ```
 generate_submission.py     the one command that makes the submission
 models/possession.npz      the trained trees (models/possession_v1.npz: our first ones)
-models/sequence.npz        the sequence network, in whole numbers
+models/sequence.npz        the sequence networks, in whole numbers
+models/sequence2.npz       (both are averaged; the decoder prices are in the second)
 possession/                everything used on the match
 training/                  everything that touches the public training games
 scripts/profile_atd.py     summary statistics of the real tracking
@@ -129,7 +136,7 @@ tests/                     the checks
 | `possession/decode.py` | turns frame probabilities into possessions |
 | `possession/model.py` | puts features, trees, network and decoder together |
 | `possession/seqnet.py` | runs the sequence network in integer arithmetic |
-| `training/sequence.py` | trains the sequence network (PyTorch), tests it on held-out games, blends it with the trees |
+| `training/sequence.py` | trains a sequence network (PyTorch), tests it on held-out games, blends it with the trees (and with `--with`, with the other network) |
 | `possession/smart_tagging.py`, `tags.py` | read the tags; use them for goals and restarts |
 | `possession/broadcast.py` | the optional `--broadcast` step: line the broadcast up with the tactical recording; turn its replays and close-ups into evidence of dead ball |
 | `possession/baseline.py` | the organisers' baseline on our arrays, to check the reader |
@@ -154,16 +161,17 @@ submission (`--no-sequence`), "first model" the one in `models/possession_v1.npz
 | held-out games | simulator setting | our spellF1 | trees alone | first model | baseline | our macroF1 | baseline macroF1 |
 |---|---|---|---|---|---|---|---|
 | DFL (7) | typical | 0.760 | 0.731 | 0.609 | 0.295 | 0.924 | 0.700 |
-| DFL (7) | more gaps during play | 0.721 | 0.700 | 0.594 | 0.256 | 0.913 | 0.671 |
-| DFL (7) | ball tracked more when dead | 0.751 | 0.732 | 0.604 | 0.281 | 0.920 | 0.623 |
-| Metrica (3) | typical | 0.772 | 0.763 | 0.713 | 0.321 | 0.901 | 0.717 |
-| Metrica (3) | more gaps during play | 0.776 | 0.752 | 0.716 | 0.290 | 0.890 | 0.681 |
-| Metrica (3) | ball tracked more when dead | 0.787 | 0.784 | 0.724 | 0.337 | 0.896 | 0.665 |
+| DFL (7) | more gaps during play | 0.733 | 0.700 | 0.594 | 0.256 | 0.915 | 0.671 |
+| DFL (7) | ball tracked more when dead | 0.760 | 0.732 | 0.604 | 0.281 | 0.923 | 0.623 |
+| Metrica (3) | typical | 0.783 | 0.763 | 0.713 | 0.321 | 0.902 | 0.717 |
+| Metrica (3) | more gaps during play | 0.781 | 0.752 | 0.716 | 0.290 | 0.893 | 0.681 |
+| Metrica (3) | ball tracked more when dead | 0.798 | 0.784 | 0.724 | 0.337 | 0.898 | 0.665 |
 
 Paired by game, the trees trained on the controlled-possession labels gained +0.12 on the DFL
 games and +0.05 on the Metrica games over the first model, better in all ten (twice the standard
 error across games: 0.03). Adding the sequence network gained another +0.019, better in nine of
-ten (twice the standard error: 0.009).
+ten (twice the standard error: 0.009), and averaging in a second network another +0.008, better
+in nine of ten (twice the standard error: 0.003).
 
 On the real match the baseline scores spellF1 0.2433 and macroF1 0.6724 (the organisers' figures),
 so our simulated games are about as hard for it as the real one.

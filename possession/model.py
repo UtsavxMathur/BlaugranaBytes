@@ -65,8 +65,9 @@ def combine(dead_raw, dead_raw_swapped, team_raw, team_raw_swapped):
 def probabilities(model, tracking, network=None):
     """(n_frames, 3) probabilities of H, A, D. Rows outside the halves are NaN.
 
-    network  a possession.seqnet.Network: its scores are averaged with the trees' (both heads,
-             plain and teams-swapped) before they are combined.
+    network  a possession.seqnet.Network, or a list of them: their scores are averaged, and that
+             average is averaged with the trees' (both heads, plain and teams-swapped) before
+             they are combined. So the trees always count for half.
     """
     plain, names = features.compute(tracking)
     swapped, _ = features.compute(features.swap_teams(tracking))
@@ -76,9 +77,11 @@ def probabilities(model, tracking, network=None):
     raw = [trees.raw_score(model.dead, plain[inside]), trees.raw_score(model.dead, swapped[inside]),
            trees.raw_score(model.team, plain[inside]), trees.raw_score(model.team, swapped[inside])]
     if network is not None:
-        if network.names != names:
-            raise ValueError("the sequence network was trained on different features")
-        extra = network.raw(plain, swapped, tracking.periods, tracking.n_frames)
+        networks = list(network) if isinstance(network, (list, tuple)) else [network]
+        if any(net.names != names for net in networks):
+            raise ValueError("a sequence network was trained on different features")
+        each = [net.raw(plain, swapped, tracking.periods, tracking.n_frames) for net in networks]
+        extra = [sum(e[k] for e in each) / len(each) for k in range(4)]
         raw = [0.5 * (r + e[inside]) for r, e in zip(raw, extra)]
     out = np.full((tracking.n_frames, 3), np.nan)
     out[inside] = combine(*raw)
