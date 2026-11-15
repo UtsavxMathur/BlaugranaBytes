@@ -18,10 +18,11 @@ and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for 
   --drift              print every feature's percentiles on this match next to the training
                        games' (aggregates only): shows where the simulator misses reality.
   --no-tags            do not use the Smart Tagging file (see possession/tags.py for its use).
-  --no-broadcast       do not use the broadcast recording. By default it is lined up with the
-                       tactical one and its replays and close-ups are used as evidence of dead
-                       ball (possession/broadcast.py); without it you get the earlier file
-                       (sha256 a320484e...29f5d).
+  --broadcast          also line the broadcast recording up with the tactical one and use its
+                       replays and close-ups as evidence of dead ball (possession/broadcast.py).
+                       Not part of our submission: its weights are estimated on the match
+                       itself, which the organisers' clarification of 15 November may not allow.
+                       With it the file is sha256 b08a4d78...8cde2; without it a320484e...29f5d.
 """
 
 import argparse
@@ -272,8 +273,8 @@ def main():
                         help="ignore the Smart Tagging file (model output only)")
     parser.add_argument("--drift", action="store_true",
                         help="print each feature's percentiles here next to training's")
-    parser.add_argument("--no-broadcast", action="store_true",
-                        help="ignore the broadcast recording (gives the earlier file)")
+    parser.add_argument("--broadcast", action="store_true",
+                        help="add the broadcast step (not part of our submission)")
     args = parser.parse_args()
 
     started = time.time()
@@ -290,14 +291,11 @@ def main():
         except IOError:
             print("  (no Smart Tagging file found: using the model alone)")
     alignment = None
-    if args.model == "possession" and not args.no_broadcast:
+    if args.model == "possession" and args.broadcast:
         try:
             alignment = load_alignment(tracking, args.data_dir, use_cache=not args.no_cache)
         except IOError as error:
-            # Not a silent fallback: without the broadcast this would be a different file.
-            raise SystemExit("{}\n\nThe submission uses the broadcast recording too. Put "
-                             "data/broadcast/ in place, or run with --no-broadcast for the "
-                             "tactical-only file.".format(error))
+            raise SystemExit("{}\n\n--broadcast needs data/broadcast/ as well.".format(error))
     letters, prob = predict(args.model, tracking, args.model_file, tags, alignment)
     labels = submission.finalize(letters, tracking.periods)
 
