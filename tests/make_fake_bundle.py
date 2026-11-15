@@ -39,7 +39,7 @@ def place(game, render=True):
     tracking, labels = game.tracking, game.labels
     if render:
         from training import simulate
-        tracking = simulate.degrade(tracking, labels, simulate.VALIDATION["typical"], seed=0)
+        tracking = simulate.degrade(tracking, labels, simulate.VALIDATION["mid"], seed=0)
     order = np.argsort(tracking.team, kind="stable")[:N_SLOTS]
     ball = np.full((n, 2), np.nan)
     players = np.full((n, N_SLOTS, 2), np.nan)

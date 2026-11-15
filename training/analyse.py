@@ -36,7 +36,7 @@ def best_match(spell, others):
     return best, partner
 
 
-def analyse(oof, prices, source, regime="typical"):
+def analyse(oof, prices, source, regime="mid"):
     found, total = np.zeros(len(BINS) - 1), np.zeros(len(BINS) - 1)
     right, made = np.zeros(len(BINS) - 1), np.zeros(len(BINS) - 1)
     starts, stops = [], []

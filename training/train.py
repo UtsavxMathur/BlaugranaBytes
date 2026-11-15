@@ -246,7 +246,10 @@ def step_tune(games, grid=None):
     """
     oof = load_oof(games)
     if grid is None:
-        grid = [(c, f, s, t) for c in CAPS for f in FLIPS for s in STOPS for t in STARTS]
+        # A change of team must not cost more than a stoppage plus a restart: otherwise the
+        # decoder slips a one-frame "stoppage" into every change of team (possession/model.py).
+        grid = [(c, f, s, t) for c in CAPS for f in FLIPS for s in STOPS for t in STARTS
+                if f <= s + t]
     decoded = {key: decode_grid(prob, periods, grid) for key, (prob, _, _, periods) in oof.items()}
 
     sources = sorted({name.split("-")[0] for name, _ in oof})

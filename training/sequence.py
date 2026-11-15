@@ -553,8 +553,8 @@ def main():
         print("training the final network on all games ...")
         net, scaler = fit([p for name in parts for p in parts[name]],
                           QUICK_STEPS if args.quick else STEPS, seed=99)
-        with open(os.path.join(WORK_DIR, "prices.json")) as handle:
-            prices = json.load(handle)
+        own_prices = os.path.join(WORK_DIR, "prices.json")      # the network alone's, if tuned
+        prices = json.load(open(own_prices)) if os.path.isfile(own_prices) else None
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
         torch.save({"state": net.state_dict(), "scaler": scaler.state(), "prices": prices,
                     "config": {"stride": STRIDE, "width": WIDTH, "dilations": list(DILATIONS),

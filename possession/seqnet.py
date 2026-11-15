@@ -19,13 +19,11 @@ import numpy as np
 
 from .tracking import ROOT
 
-DEFAULT_PATH = os.path.join(ROOT, "models", "sequence.npz")
+DEFAULT_PATH = os.path.join(ROOT, "models", "sequence_wide.npz")
 # The submission averages two networks: a wide one (128 channels, trained longer on more
-# simulated copies) and a second one trained like the first narrow network (DEFAULT_PATH) plus
-# event heads, which are dropped on export. The decoder prices of the last one are used.
-# DEFAULT_PATH stays in the repository to rebuild our earlier files.
-DEFAULT_PATHS = [os.path.join(ROOT, "models", "sequence_wide.npz"),
-                 os.path.join(ROOT, "models", "sequence2.npz")]
+# simulated copies) and a narrow one trained with event heads, which are dropped on export.
+# The decoder prices of the last one are used.
+DEFAULT_PATHS = [DEFAULT_PATH, os.path.join(ROOT, "models", "sequence2.npz")]
 SCALE_BITS = 16
 WEIGHT_BITS = 16
 LIMIT = 1 << 42          # an activation this large would mean the weights are not what we trained

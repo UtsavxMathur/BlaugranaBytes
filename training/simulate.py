@@ -1,28 +1,18 @@
-"""Render clean public tracking the way the competition's tracker would have delivered it.
+"""Render clean public tracking the way an automatic tracker might deliver it.
 
-The public games have the true ball position on every frame. The competition tracking does not,
-and the profile of the real tracking (scripts/profile_atd.py, aggregates only) shows how it
-differs. Every statement below is read off that profile:
+The public games have the true ball position on every frame. An automatic tracker does not: it
+loses the ball (in the air, among players, when it lies still, when it leaves the picture), it
+may bridge short gaps with a straight line, it smooths the track, it follows the ball for part
+of a stoppage, and it loses players the camera does not show. degrade() applies that chain:
+decide when the detector sees the ball -> apply the flat-pitch error to airborne balls -> bridge
+gaps under fill_s -> smooth -> drop players out of view.
 
-  * The delivered ball track has NO short gaps: 132 gaps of 5 s or more and almost nothing
-    shorter. So the tracker bridges every gap under 5 s with a straight line and only leaves
-    longer ones empty. A "visible" ball is therefore often an interpolated one.
-  * The track is very smooth (velocity changes are about a third of the true ones).
-  * The ball is lost when it is slow and where play stops, and found again at the restart: most
-    gaps are stoppages. But about 1 gap in 4 has the players still running: play went on while
-    the detector saw nothing for 5 s or more.
-  * Conversely the ball is often tracked while dead (80% of the 2 minutes before the second
-    half kicks off; half the time before a goal kick), so "ball seen" does not mean "ball in
-    play". A check of our first model's labels showed exactly this blind spot.
-  * 4% of seen positions are off the pitch, mostly beyond the far touchline and up to 20 m out:
-    a ball in the air is drawn where the camera's line of sight meets the ground.
-  * Players are tracked steadily (10.2 of 11 per team) with almost no jitter; the missing ones
-    are mostly those the panning camera does not show.
-
-degrade() applies exactly this chain: decide when the detector sees the ball -> apply the
-flat-pitch error to airborne balls -> bridge gaps under 5 s -> smooth -> drop players out of
-view. A Regime holds the knobs. Training draws a random Regime around the calibrated values
-for every copy of every game; training/calibrate.py compares the result with the real profile.
+A Regime holds the knobs. NONE OF THEM IS SET FROM THE PROVIDED MATCH. Training draws every knob,
+for every copy of every game, from a wide range written down in advance (Regime.random): from a
+near-perfect tracker to a poor one, and from a ball never followed in a stoppage to one followed
+most of the time. The model has to cope with all of them. Validation uses three fixed regimes
+across those ranges: low, mid and high damage (VALIDATION). The ranges are generic statements
+about automatic trackers and cameras, not measurements of any tracking.
 """
 
 import dataclasses
@@ -36,42 +26,41 @@ H, A, D, X = 0, 1, 2, 3
 
 @dataclasses.dataclass
 class Regime:
-    fill_s: float = 5.0                 # gaps shorter than this are bridged with a straight line
-    smooth_s: float = 0.20              # smoothing of the delivered ball track (std in seconds)
-    ball_noise_m: float = 0.20          # detection noise before smoothing (m)
-    # After play stops the ball is usually still tracked for a while (it rolls on, someone
-    # fetches it), and before the restart it is tracked again in the hands or at the feet of the
-    # player who restarts. The profile shows it: the ball is lost at walking pace, not at speed;
-    # it is seen half the time in the seconds before a goal kick; and one throw-in tag in three
-    # has no ball gap near it at all. Mean seconds, drawn per stoppage:
-    linger_in_s: float = 2.0            # tracked after play stops with the ball on the pitch
-    linger_out_s: float = 0.8           # tracked after the ball leaves the pitch ...
-    far_side: float = 0.35              # ... if it left on the side the camera can see
+    """The knobs of degrade(). The defaults are the middle of the ranges in random() (the "mid"
+    validation regime); none of them is taken from the provided match."""
+    fill_s: float = 3.0                 # gaps shorter than this are bridged with a straight line
+    smooth_s: float = 0.25              # smoothing of the delivered ball track (std in seconds)
+    ball_noise_m: float = 0.25          # detection noise before smoothing (m)
+    # A tracker may keep following the ball after play stops (it rolls on, someone fetches it)
+    # and pick it up again before the restart, in the hands or at the feet of the taker.
+    # Mean seconds, drawn per stoppage:
+    linger_in_s: float = 2.5            # tracked after play stops with the ball on the pitch
+    linger_out_s: float = 1.5           # tracked after the ball leaves the pitch ...
+    far_side: float = 0.5               # ... if it left on the side the camera can see
     early_chance: float = 0.5           # chance the ball is tracked before the restart at all,
-    early_s: float = 2.5                # and for how long (mean); goal kicks: longer, corners:
-    early_goal_kick: tuple = (0.7, 6.0)  # shorter (chance, mean seconds)
-    early_corner: tuple = (0.3, 1.0)
-    # In between, the ball is thrown back, passed to the taker, carried: it MOVES. The profile's
-    # ball speeds only add up if the tracked dead ball is often as fast as in play.
+    early_s: float = 3.0                # and for how long (mean); the same knobs exist for
+    early_goal_kick: tuple = (0.5, 3.0)  # goal kicks and corners (chance, mean seconds), drawn
+    early_corner: tuple = (0.5, 3.0)     # from the same ranges: no kind is assumed to differ
+    # In between, the ball is thrown back, passed to the taker, carried: it moves.
     hops: tuple = (0.45, 0.35, 0.20)    # chance of 1, 2 or 3 passes on its way to the taker
-    seen_move: float = 0.25             # chance that such a pass is tracked (mid-stoppage)
-    seen_hold: float = 0.05             # share of the time it is tracked while someone has it
+    seen_move: float = 0.5              # chance that such a pass is tracked (mid-stoppage)
+    seen_hold: float = 0.25             # share of the time it is tracked while someone has it
     # Share of stoppages during which it is tracked from start to finish.
-    seen_goal_kick: float = 0.30
-    seen_corner: float = 0.03
-    seen_other: float = 0.15
+    seen_goal_kick: float = 0.25
+    seen_corner: float = 0.25
+    seen_other: float = 0.25
     slow_lost: float = 0.5              # a ball lying or held still in play is lost this often
-    fail_per_min: float = 3.5           # detection failures per minute of live play
-    fail_median_s: float = 1.4          # their median length (log-normal: 1 in 9 is over 3x this)
-    air_height: float = 2.0             # a ball above this height (m) is "in the air" ...
-    air_lost: float = 0.45              # ... and such a stretch is undetected with this chance
-    air_never: float = 6.0              # a stretch that rises above this is never detected
+    fail_per_min: float = 4.0           # detection failures per minute of live play
+    fail_median_s: float = 1.75         # their median length (log-normal: 1 in 9 is over 3x this)
+    air_height: float = 2.5             # a ball above this height (m) is "in the air" ...
+    air_lost: float = 0.5               # ... and such a stretch is undetected with this chance
+    air_never: float = 9.5              # a stretch that rises above this is never detected
     camera_height: float = 25.0         # camera position, for the flat-pitch error (m)
-    camera_back: float = 30.0           # ... distance behind the near touchline (m)
-    view_half_m: float = 48.0           # players further than this from the action along x ...
+    camera_back: float = 35.0           # ... distance behind the near touchline (m)
+    view_half_m: float = 50.0           # players further than this from the action along x ...
     view_lost: float = 0.5              # ... are untracked this share of the time
-    player_missing: float = 0.03        # random loss of single players
-    blackout: float = 0.04              # share of time when half the players are lost at once
+    player_missing: float = 0.05        # random loss of single players
+    blackout: float = 0.05              # share of time when half the players are lost at once
 
     def seen_chance(self, kind):
         return {"goal_kick": self.seen_goal_kick, "corner": self.seen_corner}.get(kind, self.seen_other)
@@ -83,31 +72,42 @@ class Regime:
 
     @classmethod
     def random(cls, rng):
-        return cls(smooth_s=rng.uniform(0.14, 0.30), ball_noise_m=rng.uniform(0.08, 0.30),
-                   linger_in_s=rng.uniform(0.5, 4.0), linger_out_s=rng.uniform(0.2, 2.0),
-                   far_side=rng.uniform(0.2, 0.5),
-                   early_chance=rng.uniform(0.3, 0.7), early_s=rng.uniform(1.0, 4.0),
-                   early_goal_kick=(rng.uniform(0.5, 0.9), rng.uniform(3.0, 8.0)),
-                   early_corner=(rng.uniform(0.1, 0.5), rng.uniform(0.5, 2.0)),
-                   seen_move=rng.uniform(0.1, 0.5), seen_hold=rng.uniform(0.0, 0.15),
-                   seen_goal_kick=rng.uniform(0.15, 0.5), seen_corner=rng.uniform(0.0, 0.1),
-                   seen_other=rng.uniform(0.05, 0.30),
-                   slow_lost=rng.uniform(0.3, 0.8),
-                   fail_per_min=rng.uniform(2.0, 6.0), fail_median_s=rng.uniform(1.0, 2.0),
-                   air_height=rng.uniform(1.5, 3.0), air_lost=rng.uniform(0.2, 0.8),
-                   air_never=rng.uniform(4.0, 9.0),
-                   camera_height=rng.uniform(18.0, 35.0), camera_back=rng.uniform(20.0, 45.0),
-                   view_half_m=rng.uniform(40.0, 58.0), view_lost=rng.uniform(0.3, 0.7),
-                   player_missing=rng.uniform(0.01, 0.05), blackout=rng.uniform(0.01, 0.07))
+        """A regime drawn from wide ranges fixed in advance (see the module docstring)."""
+        return cls(fill_s=rng.uniform(0.0, 6.0),                 # from no bridging to 6 s
+                   smooth_s=rng.uniform(0.0, 0.5), ball_noise_m=rng.uniform(0.0, 0.5),
+                   linger_in_s=rng.uniform(0.0, 5.0), linger_out_s=rng.uniform(0.0, 3.0),
+                   far_side=rng.uniform(0.0, 1.0),
+                   early_chance=rng.uniform(0.0, 1.0), early_s=rng.uniform(0.0, 6.0),
+                   early_goal_kick=(rng.uniform(0.0, 1.0), rng.uniform(0.0, 6.0)),
+                   early_corner=(rng.uniform(0.0, 1.0), rng.uniform(0.0, 6.0)),
+                   seen_move=rng.uniform(0.0, 1.0), seen_hold=rng.uniform(0.0, 0.5),
+                   seen_goal_kick=rng.uniform(0.0, 0.5), seen_corner=rng.uniform(0.0, 0.5),
+                   seen_other=rng.uniform(0.0, 0.5),
+                   slow_lost=rng.uniform(0.0, 1.0),
+                   fail_per_min=rng.uniform(0.0, 8.0), fail_median_s=rng.uniform(0.5, 3.0),
+                   air_height=rng.uniform(1.0, 4.0), air_lost=rng.uniform(0.0, 1.0),
+                   air_never=rng.uniform(4.0, 15.0),
+                   camera_height=rng.uniform(10.0, 40.0), camera_back=rng.uniform(10.0, 60.0),
+                   view_half_m=rng.uniform(30.0, 70.0), view_lost=rng.uniform(0.0, 1.0),
+                   player_missing=rng.uniform(0.0, 0.1), blackout=rng.uniform(0.0, 0.1))
 
 
-# Fixed regimes for validation: the calibrated one, and two that stress the parts of the real
-# tracking we are least sure about.
-VALIDATION = {"typical": Regime(),
-              "more_gaps": Regime(fail_per_min=6.0, fail_median_s=1.9),
-              "seen_dead": Regime(linger_in_s=5.0, linger_out_s=2.0, early_chance=0.7, early_s=4.0,
-                                  seen_move=0.5, seen_hold=0.15, seen_goal_kick=0.5,
-                                  seen_other=0.3)}
+# Fixed regimes for validation, across the ranges of Regime.random: little damage and little
+# tracking in stoppages; the middle of every range; much damage and much tracking in stoppages.
+VALIDATION = {
+    "low": Regime(fill_s=1.0, smooth_s=0.1, ball_noise_m=0.1, linger_in_s=1.0, linger_out_s=0.5,
+                  early_chance=0.3, early_s=1.5, early_goal_kick=(0.3, 1.5),
+                  early_corner=(0.3, 1.5), seen_move=0.2, seen_hold=0.05, seen_goal_kick=0.1,
+                  seen_corner=0.1, seen_other=0.1, slow_lost=0.2, fail_per_min=1.5,
+                  fail_median_s=1.0, air_height=3.0, air_lost=0.2, air_never=12.0,
+                  view_lost=0.2, player_missing=0.02, blackout=0.02),
+    "mid": Regime(),
+    "high": Regime(fill_s=5.0, smooth_s=0.4, ball_noise_m=0.4, linger_in_s=4.0, linger_out_s=2.5,
+                   far_side=0.8, early_chance=0.8, early_s=5.0, early_goal_kick=(0.8, 5.0),
+                   early_corner=(0.8, 5.0), seen_move=0.8, seen_hold=0.4, seen_goal_kick=0.4,
+                   seen_corner=0.4, seen_other=0.4, slow_lost=0.8, fail_per_min=7.0,
+                   fail_median_s=2.5, air_height=1.5, air_lost=0.8, air_never=6.0,
+                   view_lost=0.8, player_missing=0.08, blackout=0.08)}
 
 
 def runs_mask(n, share, mean_run, rng):
@@ -261,7 +261,7 @@ def _stoppage_paths(ball, players, labels, periods, regime, rng, fps, pitch):
                 seen[first:last] = True               # tracked from start to finish
                 continue
             visible = np.zeros(length, dtype=bool)
-            # (the profile shows the ball is usually lost once it has slowed down, hence + tau)
+            # (a tracker keeps a rolling ball longer than a still one, hence + tau)
             if geometry.edge_distance(origin, pitch) > 1.0:
                 keep = rng.exponential(regime.linger_in_s) + tau / fps      # stopped on the pitch
             elif rng.random() < regime.far_side:
@@ -289,7 +289,8 @@ def _stoppage_paths(ball, players, labels, periods, regime, rng, fps, pitch):
 
 
 def degrade(tracking, labels, regime, seed):
-    """The tracking as the competition's tracker would deliver it. labels: codes per frame."""
+    """The tracking as an automatic tracker with these knobs would deliver it. labels: codes per
+    frame."""
     rng = np.random.default_rng(seed)
     fps, n = tracking.fps, tracking.n_frames
     length, width = tracking.pitch
@@ -312,7 +313,7 @@ def degrade(tracking, labels, regime, seed):
             seen[start:start + max(run, 1)] = False
 
     # A ball that lies or is held still (a goalkeeper's hands, a foot on the ball, a ball placed
-    # for a free kick) is lost: the profile shows most losses happen at ball speeds under 2 m/s.
+    # for a free kick) may be lost: a detector that relies on motion does not see it.
     step = np.full(n, np.nan)
     step[5:] = np.sqrt(((path[5:] - path[:-5]) ** 2).sum(axis=1)) * (fps / 5.0)
     with np.errstate(invalid="ignore"):

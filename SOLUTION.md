@@ -16,7 +16,7 @@ data/tactical/ (the match)       models/possession.npz (trees) + models/sequence
   read the tracking  -->  ~110 numbers per frame  -->  "dead?" and "home?" for every frame,
                                                        the models' answers averaged (trees 1/2)
                                                                  |
-  read Smart Tagging  -->  kick-offs, goals, restarts  -->  decoder: frames into possessions
+  read Smart Tagging  -->  goal to kick-off        -->  decoder: frames into possessions
                                                                  |
                                                                  v
                                              outputs/Blaugrana Bytes.csv  +  its SHA-256
@@ -46,12 +46,10 @@ and `models/sequence2.npz` with whole numbers for weights, and we run them ourse
 networks in integer arithmetic), so a fresh clone gives the same file, byte for byte. Our
 checksum is in the technical document.
 
-`--sequence models/sequence.npz models/sequence2.npz` (the narrow first network) writes the
-version before the wide network; `--sequence models/sequence.npz` alone writes our third
-submission;
-`--no-sequence` leaves both networks out and writes our second; adding
-`--model-file models/possession_v1.npz` writes our first, with the model trained on the labels as
-the files give them.
+This is our strict version: nothing in it is trained, tuned or set from the provided match (see
+the technical document). Our earlier versions, whose training simulator was set from summary
+statistics of the match's tracking, are in the git history (commit `6630f72` and before).
+`--no-sequence` leaves both networks out (the trees only).
 
 `--broadcast` adds an optional step that lines the broadcast recording up with the tactical one
 and uses its replays and close-ups as evidence of dead ball. It is not part of our submission:
@@ -65,13 +63,10 @@ asks for tuned values to come from external data (see the technical document).
 .venv/bin/python generate_submission.py --model baseline \
     --compare evaluation/results/baseline_smooth50.csv --check-public
 
-# Our model on the public 5 minutes. A sanity check, not a way to choose settings.
+# Diagnostics from earlier development, not used by this version: our model on the public
+# 5 minutes, summary statistics of the real tracking, and the broadcast line-up
 .venv/bin/python generate_submission.py --check-public
-
-# Summary statistics of the real tracking (saved to outputs/atd_profile.txt)
 .venv/bin/python scripts/profile_atd.py
-
-# How the broadcast lines up with the tactical recording, and what it shows when
 .venv/bin/python scripts/broadcast_report.py
 
 # The tests
@@ -87,24 +82,29 @@ or positions.
 .venv/bin/pip install -r requirements-train.txt   # scikit-learn and PyTorch
 .venv/bin/python training/fetch.py --only metrica   # public games into .cache/public/ (190 MB)
 .venv/bin/python training/fetch.py --only dfl       # (2.6 GB)
-# 1. labels as the files give them: our first model, whose "dead?" part we keep (~30 min)
-.venv/bin/python training/train.py --out models/possession_v1.npz
-# 2. controlled-possession labels (training/ownership.py): the "home?" part (~30 min)
-.venv/bin/python training/train.py --labels controlled \
-    --work-dir .cache/train_controlled --out .cache/models/possession_controlled.npz
-# 3. put the two together and choose the decoder prices on held-out games
-.venv/bin/python training/combine.py      # writes models/possession.npz
-# 4. the sequence network, blended with those trees; prices chosen on held-out games (~20 min)
-.venv/bin/python training/sequence.py --export models/sequence.npz
-# 5. the second network (also trained with event heads, which are dropped), averaged in;
-#    the decoder prices of the final blend are chosen on held-out games (~20 min)
-.venv/bin/python training/sequence.py --change --with .cache/train_seq_int --name sequence2 \
-    --work-dir .cache/train_seq_change --out .cache/models/sequence2.pt --export models/sequence2.npz
-# 6. the wide first network that the submission uses (128 channels, 6 copies, 3000 steps,
-#    cosine learning rate, dropout 0.1), averaged with the trees and the second network (~50 min)
-.venv/bin/python training/sequence.py --copies 6 --train-steps 3000 --cosine --dropout 0.1 \
-    --width 128 --with .cache/train_seq_change_int --name seqB --work-dir .cache/train_seqB \
-    --out .cache/models/sequence_wide.pt --export models/sequence_wide.npz
+# 1. trees on the labels as the files give them: their "dead?" part is kept (~30 min)
+.venv/bin/python training/train.py --work-dir .cache/strict/train \
+    --out .cache/strict/models/possession_v1.npz
+# 2. trees on controlled-possession labels (training/ownership.py): the "home?" part (~30 min)
+.venv/bin/python training/train.py --labels controlled --work-dir .cache/strict/train_controlled \
+    --out .cache/strict/models/possession_controlled.npz
+# 3. put the two together and choose their decoder prices on held-out games (writes models/possession.npz)
+.venv/bin/python training/combine.py --dead-model .cache/strict/models/possession_v1.npz \
+    --dead-work-dir .cache/strict/train --team-model .cache/strict/models/possession_controlled.npz \
+    --team-work-dir .cache/strict/train_controlled --work-dir .cache/strict/train_hybrid
+# 4. the wide network (128 channels, 6 copies, 3000 steps, cosine learning rate, dropout 0.1):
+#    held-out predictions in whole numbers (~50 min)
+.venv/bin/python training/sequence.py --steps cv int --copies 6 --train-steps 3000 --cosine \
+    --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt
+# 5. the second network (also trained with event heads, which are dropped): held-out predictions,
+#    the average of trees and both networks, its decoder prices, the final network (~20 min)
+.venv/bin/python training/sequence.py --change --with .cache/strict/train_seqB_int \
+    --trees .cache/strict/train_hybrid --name strict2 --compare none \
+    --work-dir .cache/strict/train_seq_change --out .cache/strict/models/sequence2.pt --export models/sequence2.npz
+# 6. the final wide network, with the same prices
+.venv/bin/python training/sequence.py --steps final --copies 6 --train-steps 3000 --cosine \
+    --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt \
+    --export models/sequence_wide.npz --prices .cache/strict/train_seq_change_blend/prices.json
 ```
 
 Each training run tests the model on games it has not seen, picks the decoder settings on those,
@@ -112,10 +112,9 @@ and then trains the final model on all ten games. A retrained model can differ s
 one in the repository, because scikit-learn and PyTorch add up some sums on several threads or on
 the graphics processor. Only training needs PyTorch.
 
-More scripts for changing the simulator or the model:
+More scripts for changing the model:
 
 ```bash
-.venv/bin/python training/calibrate.py    # simulated tracking next to the real profile
 .venv/bin/python training/ownership.py    # what the controlled-possession rule does to each game
 .venv/bin/python training/benchmark.py --labels controlled --save NAME --compare OTHER
                                           # held-out scores in detail, two versions side by side
@@ -125,13 +124,12 @@ More scripts for changing the simulator or the model:
 
 ```
 generate_submission.py     the one command that makes the submission
-models/possession.npz      the trained trees (models/possession_v1.npz: our first ones)
-models/sequence_wide.npz   the two sequence networks of the submission, in whole numbers
+models/possession.npz      the trained trees
+models/sequence_wide.npz   the two sequence networks, in whole numbers
 models/sequence2.npz       (averaged; the decoder prices are in the second)
-models/sequence.npz        the narrow first network, for our earlier files
 possession/                everything used on the match
 training/                  everything that touches the public training games
-scripts/profile_atd.py     summary statistics of the real tracking
+scripts/profile_atd.py     summary statistics of the real tracking (a diagnostic, not used)
 scripts/broadcast_report.py  how the broadcast lines up, and what it adds
 tests/                     the checks
 ```
@@ -145,13 +143,13 @@ tests/                     the checks
 | `possession/model.py` | puts features, trees, network and decoder together |
 | `possession/seqnet.py` | runs the sequence network in integer arithmetic |
 | `training/sequence.py` | trains a sequence network (PyTorch), tests it on held-out games, blends it with the trees (and with `--with`, with the other network) |
-| `possession/smart_tagging.py`, `tags.py` | read the tags; use them for goals and restarts |
+| `possession/smart_tagging.py`, `tags.py` | read the tags; use them for goal-to-kick-off stoppages |
 | `possession/broadcast.py` | the optional `--broadcast` step: line the broadcast up with the tactical recording; turn its replays and close-ups into evidence of dead ball |
 | `possession/baseline.py` | the organisers' baseline on our arrays, to check the reader |
-| `possession/profile.py` | the summary statistics |
+| `possession/profile.py` | summary statistics of a tracking (a diagnostic; not used by the submission) |
 | `possession/submission.py` | writes and checks the CSV |
 | `training/fetch.py`, `dfl.py`, `metrica.py`, `dataset.py` | download and load the public games |
-| `training/simulate.py`, `calibrate.py` | make public tracking look like the real tracker's output |
+| `training/simulate.py` | damage public tracking like an automatic tracker, over wide ranges fixed in advance |
 | `training/train.py`, `analyse.py` | train, test on held-out games, look at the errors |
 | `training/ownership.py` | the controlled-possession rule that relabels the public games |
 | `training/combine.py` | one model's "dead?" part with another's "home?" part, prices chosen on held-out games |
@@ -162,28 +160,25 @@ tests/                     the checks
 
 A game is never labelled by a model that was trained on it. Scores are from the official
 `evaluation/possession_metrics.py`, against the controlled-possession labels. We test under three
-simulator settings: our best estimate of the real tracker, one with more ball gaps during play,
-and one where the ball is tracked more often during stoppages. "Trees alone" is our second
-submission (`--no-sequence`), "first model" the one in `models/possession_v1.npz`.
+fixed simulator settings across the ranges the training draws from: low, mid and high damage
+(`training/simulate.py`). "Trees alone" is `--no-sequence`.
 
-| held-out games | simulator setting | our spellF1 | trees alone | first model | baseline | our macroF1 | baseline macroF1 |
-|---|---|---|---|---|---|---|---|
-| DFL (7) | typical | 0.766 | 0.731 | 0.609 | 0.295 | 0.929 | 0.700 |
-| DFL (7) | more gaps during play | 0.746 | 0.700 | 0.594 | 0.256 | 0.921 | 0.671 |
-| DFL (7) | ball tracked more when dead | 0.769 | 0.732 | 0.604 | 0.281 | 0.931 | 0.623 |
-| Metrica (3) | typical | 0.786 | 0.763 | 0.713 | 0.321 | 0.908 | 0.717 |
-| Metrica (3) | more gaps during play | 0.783 | 0.752 | 0.716 | 0.290 | 0.898 | 0.681 |
-| Metrica (3) | ball tracked more when dead | 0.803 | 0.784 | 0.724 | 0.337 | 0.903 | 0.665 |
+| held-out games | simulator setting | our spellF1 | trees alone | baseline | our macroF1 | baseline macroF1 |
+|---|---|---|---|---|---|---|
+| DFL (7) | low damage | 0.771 | 0.751 | 0.336 | 0.930 | 0.726 |
+| DFL (7) | mid | 0.748 | 0.717 | 0.249 | 0.926 | 0.611 |
+| DFL (7) | high damage | 0.724 | 0.681 | 0.179 | 0.911 | 0.501 |
+| Metrica (3) | low damage | 0.823 | 0.801 | 0.369 | 0.913 | 0.761 |
+| Metrica (3) | mid | 0.787 | 0.760 | 0.268 | 0.899 | 0.616 |
+| Metrica (3) | high damage | 0.755 | 0.696 | 0.187 | 0.885 | 0.527 |
 
-Paired by game, the trees trained on the controlled-possession labels gained +0.12 on the DFL
-games and +0.05 on the Metrica games over the first model, better in all ten (twice the standard
-error across games: 0.03). Adding the sequence network gained another +0.019, better in nine of
-ten (twice the standard error: 0.009), averaging in a second network another +0.008, better in
-nine of ten (twice the standard error: 0.003), and a wider first network another +0.007, better
-in seven of ten (+0.008 with prices chosen on the other folds, eight of ten).
+The choice of networks was made on these held-out games, with each fold's prices chosen on the
+other folds: trees with the wide and the second network 0.760, with the narrow network instead
+0.754, with the wide network alone 0.751, trees alone 0.727. (Our earlier versions, with a
+simulator set from summary statistics of the match, are compared in the git history.)
 
 On the real match the baseline scores spellF1 0.2433 and macroF1 0.6724 (the organisers' figures),
-so our simulated games are about as hard for it as the real one.
+which sits inside the range of our three settings.
 
 The optional broadcast step cannot be in this table: the public games have no broadcast feed.
 

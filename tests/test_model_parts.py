@@ -120,25 +120,35 @@ def moving_ball_game(n=30000, seed=0):
     return tracking, labels.astype(np.int8)
 
 
-def test_simulator_delivers_what_the_real_tracker_delivers():
+def test_simulator_degrades_as_its_knobs_say():
     tracking, labels = moving_ball_game()
-    regime = simulate.Regime()
-    damaged = simulate.degrade(tracking, labels, regime, seed=3)
+    for regime in simulate.VALIDATION.values():
+        damaged = simulate.degrade(tracking, labels, regime, seed=3)
 
-    # no short gaps: everything under fill_s is bridged (gaps touching the ends cannot be)
-    starts, lengths = geometry.runs_of(~damaged.ball_visible())
-    inner = (starts > 0) & (starts + lengths < tracking.n_frames)
-    assert len(lengths[inner]) > 5
-    assert lengths[inner].min() >= int(regime.fill_s * tracking.fps)
+        # no short gaps: everything under fill_s is bridged (gaps touching the ends cannot be)
+        starts, lengths = geometry.runs_of(~damaged.ball_visible())
+        inner = (starts > 0) & (starts + lengths < tracking.n_frames)
+        assert len(lengths[inner]) > 0
+        assert lengths[inner].min() >= int(regime.fill_s * tracking.fps)
 
-    # most stoppages lose the ball, most live play keeps it, some players go missing
-    missing = ~damaged.ball_visible()
-    assert missing[labels == 2].mean() > 0.4 > missing[labels == 0].mean()
-    assert 0.01 < np.isnan(damaged.players[:, :, 0]).mean() < 0.3
+        # stoppages lose the ball more often than live play does; some players go missing
+        missing = ~damaged.ball_visible()
+        assert missing[labels == 2].mean() > missing[labels == 0].mean()
+        assert 0.0 < np.isnan(damaged.players[:, :, 0]).mean() < 0.5
 
-    again = simulate.degrade(tracking, labels, regime, seed=3)
-    np.testing.assert_array_equal(damaged.ball, again.ball)       # same seed, same result
+        again = simulate.degrade(tracking, labels, regime, seed=3)
+        np.testing.assert_array_equal(damaged.ball, again.ball)   # same seed, same result
     assert not np.isnan(tracking.ball).any()                      # the original is untouched
+
+
+def test_random_regimes_stay_inside_their_ranges_and_vary():
+    rng = np.random.default_rng(0)
+    regimes = [simulate.Regime.random(rng) for _ in range(200)]
+    fills = np.array([r.fill_s for r in regimes])
+    assert 0.0 <= fills.min() < 1.0 and 5.0 < fills.max() <= 6.0
+    assert all(0.0 <= r.seen_other <= 0.5 and 0.0 <= r.view_lost <= 1.0 for r in regimes)
+    # no kind of restart is assumed to be tracked differently: same ranges for every kind
+    assert abs(np.mean([r.seen_goal_kick for r in regimes]) - np.mean([r.seen_corner for r in regimes])) < 0.05
 
 
 def test_tag_evidence_only_where_the_model_allows_it():
@@ -154,31 +164,7 @@ def test_tag_evidence_only_where_the_model_allows_it():
              Tag("set pieces", 14975, 15100, -1, "kick off (after goal)", "")]
     goal_windows, candidates = tags.goal_stretches(items, prob, fps)
     assert candidates == 2 and len(goal_windows) == 1
-    assert goal_windows[0][0] == 4400 + 20 * fps and 8900 < goal_windows[0][1] < 8875 + 4 * fps
-
-    # restarts: the ball is unseen, then struck 6 s after each tag starts (5 tags of one kind)
-    speed = np.full(n, np.nan)
-    codes = np.zeros(n, dtype=np.int8)
-    pieces = []
-    for k, start in enumerate((1000, 4000, 7000, 10000, 13000)):
-        strike = start + 6 * fps
-        speed[strike - 200:strike] = 1.0                     # carried to the spot ...
-        speed[strike:strike + 100] = 12.0                    # ... then struck
-        pieces.append(Tag("set pieces", start, start + 875, 0, "corner kick", ""))
-        if k < 4:
-            codes[strike - 400:strike - 200] = 2             # the model found the stoppage, but
-    windows, report = tags.restart_stretches(pieces, codes, speed, fps)   # ended it too early
-    n_tags, found, median, spread, used = report["corner kick"]
-    assert (n_tags, found, used) == (5, 5, True) and abs(median - 6.0) < 0.1 and spread < 0.1
-    assert report["counts"] == {"joined": 4, "alone": 1, "fallback": 0}
-    first = min(windows)
-    assert first == (1000 + 6 * fps - 201, 1000 + 6 * fps - int(0.5 * fps))   # from the model's D
-    assert tags.strike_frame(np.full(500, 1.0), 100, fps) is None             # never struck
-    assert tags.strike_frame(np.full(500, 12.0), 100, fps) is None            # fast all along: play
-    twice = np.full(600, 1.0)
-    twice[150:200], twice[320:400] = 12.0, 12.0                               # a return, then the kick
-    assert tags.strike_frames(twice, 100, fps) == [150, 320]
-    assert tags.strike_frame(twice, 100, fps, expected=8.0) == 320
+    assert goal_windows[0] == (4400 + 20 * fps, 8875)       # ends where the kick-off tag starts
 
 
 def test_tree_export_matches_scikit_learn(tmp_path):
@@ -201,3 +187,12 @@ def test_tree_export_matches_scikit_learn(tmp_path):
     loaded = model.Model.load(path)
     assert loaded.names == saved.names and loaded.prices == saved.prices
     np.testing.assert_array_equal(trees.raw_score(loaded.team, X), trees.raw_score(exported, X))
+
+
+def test_degenerate_decoder_prices_are_refused():
+    from possession import model as model_module
+    prob = np.tile([0.45, 0.45, 0.10], (100, 1))
+    ok = {"cap": 600, "flip": 3000, "stop": 4000, "start": 4000}
+    assert model_module.decode_periods(prob, [(0, 100)], ok).shape == (100,)
+    with pytest.raises(ValueError):
+        model_module.decode_periods(prob, [(0, 100)], dict(ok, flip=10000))

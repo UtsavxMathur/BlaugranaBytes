@@ -95,6 +95,10 @@ def decode_periods(prob, periods, prices, forced_dead=(), live_cost=None):
     live_cost    (n,) integer cost added to H and A on each frame: outside evidence that the
                  ball is dead (broadcast.dead_evidence), or None.
     """
+    if prices["flip"] > prices["stop"] + prices["start"]:
+        raise ValueError("degenerate decoder prices {}: a change of team would cost more than a "
+                         "stoppage plus a restart, so every change would become H -> D -> A with "
+                         "a one-frame stoppage".format(prices))
     labels = np.full(len(prob), 3, dtype=np.int8)
     for start, stop in periods:
         cost = decode.frame_costs(prob[start:stop], prices.get("cap", decode.CAP))
