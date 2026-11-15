@@ -8,6 +8,8 @@ Reads data/tactical/ (or $MTAH_DATA_DIR), writes the CSV, runs the official form
 and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for byte.
 
   --model possession   our model (models/possession.npz, trained on public games only).
+  --model-file FILE    another model file; models/possession_v1.npz is our first submission's
+                       model (sha256 a320484e...29f5d).
   --model baseline     the organisers' baseline (nearest player + majority vote). Its full-match
                        score is published (spellF1 0.2433), so it is the known floor.
   --compare FILE       % of graded frames on which the output agrees with another submission.
@@ -22,7 +24,6 @@ and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for 
                        replays and close-ups as evidence of dead ball (possession/broadcast.py).
                        Not part of our submission: its weights are estimated on the match
                        itself, which the organisers' clarification of 15 November may not allow.
-                       With it the file is sha256 b08a4d78...8cde2; without it a320484e...29f5d.
 """
 
 import argparse

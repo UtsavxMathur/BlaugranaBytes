@@ -42,7 +42,21 @@ def _sources(name, root):
     return paths
 
 
-def load(name, root=fetch.PUBLIC_DIR, use_cache=True, verbose=True):
+CONVENTIONS = ("source", "controlled")
+
+
+def load(name, root=fetch.PUBLIC_DIR, use_cache=True, verbose=True, labels="source"):
+    """labels: "source" as the files give them, or "controlled" (training/ownership.py)."""
+    game = _load(name, root, use_cache, verbose)
+    if labels == "controlled":
+        from training import ownership
+        game = Game(name, game.tracking, ownership.relabel(game.tracking, game.labels)[0])
+    elif labels != "source":
+        raise ValueError("labels must be one of {}".format(CONVENTIONS))
+    return game
+
+
+def _load(name, root, use_cache, verbose):
     paths = _sources(name, root)
     cache = cache_path(paths, tag="game-" + name)
     labels_cache = cache.replace(".npz", ".labels.npy")

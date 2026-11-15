@@ -8,8 +8,10 @@ and where we know it still goes wrong.
 ## The short version
 
 We could not learn from this match, so we learned from other matches. We took public games that
-come with a label on every frame, made their tracking look like the tracking we were given, and
-trained a classifier on them. A second step turns the classifier's frame-by-frame answers into
+come with a label on every frame, rewrote those labels so that possession changes only when a
+team gains control of the ball (the challenge's definition), made their tracking look like the
+tracking we were given, and trained a classifier on them. A second step turns the classifier's
+frame-by-frame answers into
 whole possessions, and the Smart Tagging file helps us pin down restarts. We also built an
 optional step that uses the broadcast recording; for the reason given in "The rules
 clarification of 15 November", it is not used for the file we submit.
@@ -75,6 +77,14 @@ The third lesson was about the metric. spellF1 counts each possession once, but 
 trained on frames sees a 40-second possession forty times more often than a 1-second one. We
 weight the training frames so that short possessions count as much as long ones.
 
+The fourth lesson was about the labels themselves. Our two sources each follow their own
+convention: DFL's possession flag changes team on a single touch, and our Metrica labels change
+at the other team's events. Both give about twice as many possessions per minute of play as the
+challenge's definition allows, where a touch, a deflection or a duel without control is not a
+change of possession. Our model had learned to split possessions the same way. We rewrote the
+training labels with one rule taken from that definition (section "Training data"), and on games
+it had not seen the model trained on them scored about 0.10 higher.
+
 After we had frozen a first version we built one more step. The broadcast feed comes with its
 own tracking, and its homography is not valid on replays, close-ups and crowd shots, which mostly
 happen while the ball is dead. The feed is not synchronised with the tactical one, so we lined
@@ -128,6 +138,27 @@ with the tag     A A A D D D D D D D D D D D D A A A A A      dead up to the str
 
 None of this comes from the provided match.
 
+Then we put both sources on one convention, the challenge's: possession changes only when a
+player of the other team gains *controlled* possession (`training/ownership.py`). Every
+possession that follows the other team's directly is checked against the clean tracking of the
+public game. It counts only if a player of the new team keeps the ball for a second (as the
+nearest player, within 1.5 m, with the ball below 2 m), or if two of its players pass between
+them. Otherwise it was a touch or a deflection, and its frames go back to the team that had the
+ball. The first possession after a stoppage always counts, and dead-ball frames never change.
+These constants come from the definition and from what a touch looks like at 25 frames per
+second, not from the provided match.
+
+| | possessions per minute of play | possessions under 2 s |
+|---|---|---|
+| DFL, labels as given | 8.3 | 25-37% per game |
+| DFL, controlled possession | 4.3 | 2-9% |
+| Metrica, labels as given | 6.1 | 24-29% |
+| Metrica, controlled possession | 3.8 | 2-9% |
+
+For comparison, the public 5 minutes have 4.2 possessions per minute of play. We did not fit
+anything to that number; it only tells us that this reading of the definition is close to the
+truth's.
+
 We did take one thing from the provided match: summary statistics of its tracking, printed by
 `scripts/profile_atd.py` and listed in `training/calibrate.py`. They are counts, percentages and
 medians over the whole match, and we used them to set up the simulator described below.
@@ -136,20 +167,23 @@ We want to be clear about the public 5 minutes. We used them to confirm that our
 correct, and, as CHALLENGE.md suggests, to understand what the truth means by "dead". That is how
 we found the dead-ball problem described above. We fixed it by changing what the simulator does,
 and we judged every change on held-out public games. We did not fit any setting to the public
-window, and we did not pick between versions by their score on it. For the record, our five
-versions scored spellF1 0.51, 0.58, 0.56, 0.66 and 0.64 there, and we submit the last one.
+window, and we did not pick between versions by their score on it. For the record, our first
+five versions scored spellF1 0.51, 0.58, 0.56, 0.66 and 0.64 there. The one we submit, trained
+on the controlled-possession labels, scores 0.65. We chose it on held-out games, where it gained
+about 0.10, and ran it on the public window only to check that nothing had broken.
 
 The optional broadcast step could not be judged on held-out games, because the public games have
 no broadcast feed. Its weights are measured on the match itself without labels, and we looked at
-what it did on the public window as a check: dead-ball recall rose from 0.68 to 0.86 with
-precision unchanged at 0.96, macroF1 rose from 0.85 to 0.90, and spellF1 stayed at 0.64. We do
-not submit it (see the next section).
+what it did on the public window as a check, with our first model: dead-ball recall rose from 0.68
+to 0.86 with precision unchanged at 0.96, macroF1 rose from 0.85 to 0.90, and spellF1 stayed at
+0.64. We do not submit it (see the next section).
 
 ## The rules clarification of 15 November
 
 The organisers' clarification says that anything trained or tuned must use external data only,
-never the ground truth or the provided video. Our model is trained only on the public games, and
-the decoder settings are chosen on held-out public games. We have asked the organisers about
+never the ground truth or the provided video. Our model is trained only on the public games, the
+rule we use to relabel them comes from the definition, and the decoder settings are chosen on
+held-out public games. We have asked the organisers about
 three things that use the provided game's own automatic data, never its ground truth or video:
 
 1. the simulator's settings, which we chose from summary statistics of the provided tactical
@@ -214,13 +248,18 @@ does the home team have it? We ask each question twice, the second time with the
 and combine the answers. This guarantees that the model has no built-in preference for home or
 away.
 
+The "home?" model is trained on the controlled-possession labels. The "dead?" model is trained on
+the labels as the files give them: the new convention changes who owns the ball, never whether it
+is dead, so that model must not change with it (`training/combine.py` puts the two together).
+
 The frames of short possessions and short stoppages get more weight in training (up to 8 times,
 for anything shorter than 12 seconds). On held-out games this added about 0.04 spellF1.
 
 The classifier's answers flicker from frame to frame, and every flicker would count as a
 possession. A decoder (`possession/decode.py`, the Viterbi algorithm) finds the sequence of
 labels that best fits the probabilities while paying a price for every change of label. We chose
-the prices on held-out games.
+the prices on held-out games: a change of team costs 3,000, entering a stoppage 12,000 and
+leaving one 1,000, where a frame the model is sure about costs at most 600.
 
 ```
 classifier, frame by frame    H H H H A H H H H H D H D D D D D D H D D A A A A A
@@ -253,7 +292,8 @@ tactical players stand at that moment. We use that to line the two up
 
 On this match the broadcast keeps a fixed delay within each half: 4,014 frames (2 min 40.6 s) in
 the first and 26,919 frames (17 min 56.8 s) in the second, where the halftime break was cut. On
-live pictures the two trackings put the players a median of 0.28 m apart. That gives every
+live pictures the two trackings put the players a median of 0.28 m apart. (The numbers in this
+section were measured with our first submission's model.) That gives every
 tactical frame a broadcast state: live pictures (61.6% of graded frames), a replay (2.2%: a pitch
 is shown but its players are somewhere else), no pitch at all (31.6%), unclear (2.8%) or no
 broadcast frame (1.7%).
@@ -288,14 +328,14 @@ the wrong way; and the line-up has only been tested on this match and on made-up
 We did not write the rules by hand; the model learned them from the labels. In practice they come
 out like this.
 
-The ball belongs to the team whose player last controlled it. A loose ball, a duel or a ball in
-flight stays with the previous team, because that is how the training labels are written. The
-decoder also refuses a change of team that the evidence does not hold up for long enough.
+The ball belongs to the team whose player last had it under control. A touch, a deflection or a
+duel without control does not change that, and a loose ball or a ball in flight stays with the
+team that had it: that is how we rewrote the training labels, so it is what the model learned.
+The decoder also refuses a change of team that the evidence does not hold up for long enough.
 
-A short touch becomes a possession only if the classifier is confident enough to pay for two
-changes of label, into the new team and back. With the training weights the model keeps about 80%
-as many possessions as our Metrica labels contain. The very shortest ones, under a second, are
-still mostly merged into their neighbours.
+Under this rule very short possessions are rare (2-9% of the relabelled ones last under 2
+seconds), and the model finds only about a quarter to a third of them. On held-out games it
+predicts about 6% fewer possessions than the truth has.
 
 The ball is dead from the moment play stops until it is struck again. The model judges this
 mainly from the players: they slow down, and someone carries the ball to a spot. Three stretches
@@ -308,46 +348,49 @@ macroF1 it counts as a mistake.
 ## How well it works
 
 We tested by leaving games out: a game is never labelled by a model that was trained on it. The
-scores come from the official `evaluation/possession_metrics.py`. The organisers' baseline runs on
-the same simulated tracking for comparison; on the real match it scores 0.2433.
+scores come from the official `evaluation/possession_metrics.py`, against the controlled-possession
+labels. Our first submission's model and the organisers' baseline run on the same simulated
+tracking for comparison; on the real match the baseline scores 0.2433.
 
-| held-out games | simulator setting | our spellF1 | baseline spellF1 | our macroF1 | baseline macroF1 |
-|---|---|---|---|---|---|
-| DFL (7) | typical | 0.570 | 0.284 | 0.895 | 0.692 |
-| DFL (7) | more gaps during play | 0.537 | 0.252 | 0.882 | 0.664 |
-| DFL (7) | ball tracked more when dead | 0.566 | 0.267 | 0.893 | 0.616 |
-| Metrica (3) | typical | 0.635 | 0.314 | 0.882 | 0.711 |
-| Metrica (3) | more gaps during play | 0.626 | 0.286 | 0.873 | 0.676 |
-| Metrica (3) | ball tracked more when dead | 0.643 | 0.320 | 0.881 | 0.659 |
+| held-out games | simulator setting | our spellF1 | first model | baseline | our macroF1 | baseline macroF1 |
+|---|---|---|---|---|---|---|
+| DFL (7) | typical | 0.731 | 0.609 | 0.295 | 0.916 | 0.700 |
+| DFL (7) | more gaps during play | 0.700 | 0.594 | 0.256 | 0.905 | 0.671 |
+| DFL (7) | ball tracked more when dead | 0.732 | 0.604 | 0.281 | 0.914 | 0.623 |
+| Metrica (3) | typical | 0.763 | 0.713 | 0.321 | 0.892 | 0.717 |
+| Metrica (3) | more gaps during play | 0.752 | 0.716 | 0.290 | 0.881 | 0.681 |
+| Metrica (3) | ball tracked more when dead | 0.784 | 0.724 | 0.337 | 0.892 | 0.665 |
 
 ```
 spellF1 on games the model never saw (typical simulator setting)
 
-Metrica   ours      ################################  0.64
-          baseline  ################                  0.31
-DFL       ours      #############################     0.57
-          baseline  ##############                    0.28
-                    |         |         |         |
-                    0        0.2       0.4       0.6
+Metrica   ours         ######################################  0.76
+          first model  ###################################     0.71
+          baseline     ################                        0.32
+DFL       ours         ####################################    0.73
+          first model  ##############################          0.61
+          baseline     ###############                         0.30
+                       |         |         |         |
+                       0        0.2       0.4       0.6
 ```
 
-So on games it has never seen, the model scores about twice what the baseline does. Please read
-this as an estimate. The tracking in these tests is simulated, and the Metrica labels are ones we
-derived ourselves.
+So on games it has never seen, the model scores more than twice what the baseline does, and it
+beat our first model in every one of the ten games. Please read this as an estimate. The tracking
+in these tests is simulated, and the labels are our reading of the definition.
 
 ## Where it still fails
 
-- Possessions shorter than about 2 seconds are mostly missed. In the Metrica labels they are a
-  quarter of all possessions.
+- Possessions shorter than about 2 seconds are mostly missed, and a short spell of the other
+  team inside a long possession tends to be merged away: on the public window we make 12
+  possessions where the truth has 17.
 - A stoppage of 5 or 6 seconds that shows up only as a ball gap looks just like play that went on
   unseen, and we sometimes miss it.
 - When the ball stays in view, we tend to notice a stoppage two or three seconds late. A ball
   passed around during a stoppage can still be read as a short possession. On the public window
-  we find 68% of the dead-ball frames.
+  we find 79% of the dead-ball frames.
 - Our simulator puts the ball near the touchlines about twice as often as the real tracker does.
-- The two training sources do not agree with each other, or exactly with the competition, on
-  what counts as a change of possession. The DFL flags change on single touches more readily
-  than the Metrica events do.
+- Our rule for controlled possession is our reading of the definition. The corrected tracking
+  behind the truth may draw the line elsewhere, for example after more than a second of control.
 
 With more time we would try detecting the ball in the tactical video ourselves, find the start of
 a stoppage from the moment the ball crosses a line, and add a second model that judges whole
@@ -373,24 +416,31 @@ python3 -m venv .venv
 ```
 
 The command prints the SHA-256 of the file it wrote. Ours is
-`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`, and we got the same value
-from a fresh clone of the repository. With `--broadcast` (which also needs `data/broadcast/`) it
-adds the optional broadcast step and writes
-`b08a4d78f28889f4719d9b3c5560887eb14b42aae0418ef43891b7838e08cde2`.
+`0674c775c4b6758a8dd2c89a38f7b3c20dd584fe6772b2992ee1a8324f3afa24`, and we got the same value
+from a fresh clone of the repository. Two other files can be made from the same repository:
+`--model-file models/possession_v1.npz` writes our first submission
+(`a320484ed426d4d71c70ce02406d19b65965604b55c524b26a830f49f2c29f5d`), and `--broadcast` (which
+also needs `data/broadcast/`) adds the optional broadcast step.
 
-The trained model is in the repository (`models/possession.npz`). To train it again from the
+The trained model is in the repository (`models/possession.npz`). To build it again from the
 public games:
 
 ```bash
 .venv/bin/pip install -r requirements-train.txt
 .venv/bin/python training/fetch.py                      # downloads 2.8 GB of public data
-.venv/bin/python training/train.py                      # about 30 minutes
+.venv/bin/python training/train.py --out models/possession_v1.npz        # labels as given
+.venv/bin/python training/train.py --labels controlled \
+    --work-dir .cache/train_controlled --out .cache/models/possession_controlled.npz
+.venv/bin/python training/combine.py                    # writes models/possession.npz
 ```
 
-A retrained model can differ slightly from ours, because scikit-learn builds its trees on
-several threads. The submitted file comes from the model in the repository.
+Each training run takes about 30 minutes. A retrained model can differ slightly from ours,
+because scikit-learn builds its trees on several threads. The submitted file comes from the
+model in the repository.
 
 `.venv/bin/python -m pytest tests -q` runs our checks. Among other things they confirm that our
 reader and baseline give exactly what `starter/baseline.py` gives, that running the trees in
-numpy gives exactly what scikit-learn gives, and that the broadcast line-up recovers a known
-delay, cut and mirrored axes on made-up recordings.
+numpy gives exactly what scikit-learn gives, that the relabelling treats touches, holds and
+passes as described above, that the whole pipeline still gives the same output on a made-up
+match, and that the broadcast line-up recovers a known delay, cut and mirrored axes on made-up
+recordings.

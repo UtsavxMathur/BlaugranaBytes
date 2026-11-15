@@ -39,6 +39,7 @@ THIN = 4              # keep every 4th frame for training
 SPELL_WEIGHT_S = 12.0 # segments shorter than this many seconds are up-weighted (0 = off)
 WEIGHT_CAP = 8.0      # ... by at most this factor
 H, A, D, X = 0, 1, 2, 3
+LABELS = "source"       # label convention of the public games (training/dataset.py CONVENTIONS)
 
 # Decoder settings tried on the held-out predictions (see possession/decode.py).
 CAPS = (200, 600, 1200)
@@ -153,7 +154,7 @@ def check_export(estimator, X):
 def step_rows(games, quick, spell_weight=0.0):
     rows, names = {}, None
     for name in games:
-        game = dataset.load(name, verbose=False)
+        game = dataset.load(name, verbose=False, labels=LABELS)
         started = time.time()
         rows[name] = []
         for copy in range(1 if quick else COPIES):
@@ -174,7 +175,7 @@ def step_cv(rows, quick):
             print("  tree export check: max difference {:.1e}".format(
                 check_export(dead, parts[0][0])), flush=True)
         for name in held_out:
-            game = dataset.load(name, verbose=False)
+            game = dataset.load(name, verbose=False, labels=LABELS)
             for regime_name in simulate.VALIDATION:
                 prob, base = held_out_probabilities(game, regime_name, dead, team)
                 np.savez(os.path.join(WORK_DIR, "oof_{}_{}.npz".format(name, regime_name)),
@@ -187,7 +188,7 @@ def load_oof(games):
     """{(game, regime): (prob, baseline codes, truth codes, periods)}"""
     out = {}
     for name in games:
-        game = dataset.load(name, verbose=False)
+        game = dataset.load(name, verbose=False, labels=LABELS)
         for regime_name in simulate.VALIDATION:
             path = os.path.join(WORK_DIR, "oof_{}_{}.npz".format(name, regime_name))
             if not os.path.isfile(path):
@@ -269,6 +270,7 @@ def step_final(rows, names, prices, quick, path, spell_weight=0.0):
     check_export(dead, parts[0][0])
     check_export(team, parts[0][0])
     info = {"games": sorted(rows), "copies": 1 if quick else COPIES, "thin": THIN,
+            "labels": LABELS,
             "spell_weight_s": float(spell_weight),
             "rows": int(sum(len(p[1]) for p in parts)), "quick": bool(quick),
             "top_features_dead": top_features(dead, names),
@@ -291,6 +293,7 @@ def step_final(rows, names, prices, quick, path, spell_weight=0.0):
 
 
 def main():
+    global LABELS, WEIGHT_CAP, WORK_DIR
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--steps", nargs="+", default=["cv", "tune", "final"],
                         choices=["cv", "tune", "final"])
@@ -301,12 +304,14 @@ def main():
     parser.add_argument("--weight-cap", type=float, default=None,
                         help="largest factor a short segment is up-weighted by")
     parser.add_argument("--work-dir", default=None, help="where held-out predictions are kept")
+    parser.add_argument("--labels", default=LABELS, choices=dataset.CONVENTIONS,
+                        help="label convention: as the files give it, or controlled possession "
+                             "(training/ownership.py)")
     args = parser.parse_args()
+    LABELS = args.labels
     if args.weight_cap:
-        global WEIGHT_CAP
         WEIGHT_CAP = args.weight_cap
     if args.work_dir:
-        global WORK_DIR
         WORK_DIR = args.work_dir
         os.makedirs(WORK_DIR, exist_ok=True)
     games = [name for fold in FOLDS for name in fold]

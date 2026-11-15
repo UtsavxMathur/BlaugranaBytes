@@ -43,6 +43,9 @@ SHA-256. It takes about half a minute. Only numpy and pandas are needed: the tra
 stored in `models/possession.npz` and we run them ourselves in numpy, so a fresh clone gives the
 same file, byte for byte. Our checksum is in the technical document.
 
+`--model-file models/possession_v1.npz` writes our first submission instead, with the model
+trained on the labels as the files give them.
+
 `--broadcast` adds an optional step that lines the broadcast recording up with the tactical one
 and uses its replays and close-ups as evidence of dead ball. It is not part of our submission:
 its weights are measured on the match itself, and the organisers' clarification of 15 November
@@ -76,25 +79,33 @@ or positions.
 ```bash
 .venv/bin/pip install -r requirements-train.txt
 .venv/bin/python training/fetch.py        # downloads 2.8 GB of public games into .cache/public/
-.venv/bin/python training/train.py        # about 30 minutes, writes models/possession.npz
+# 1. labels as the files give them: our first model, whose "dead?" part we keep (~30 min)
+.venv/bin/python training/train.py --out models/possession_v1.npz
+# 2. controlled-possession labels (training/ownership.py): the "home?" part (~30 min)
+.venv/bin/python training/train.py --labels controlled \
+    --work-dir .cache/train_controlled --out .cache/models/possession_controlled.npz
+# 3. put the two together and choose the decoder prices on held-out games
+.venv/bin/python training/combine.py      # writes models/possession.npz
 ```
 
-Training tests the model on games it has not seen, picks the decoder settings on those, and then
-trains the final model on all ten games. A retrained model can differ slightly from the one in
-the repository, because scikit-learn builds trees on several threads.
+Each training run tests the model on games it has not seen, picks the decoder settings on those,
+and then trains the final model on all ten games. A retrained model can differ slightly from the
+one in the repository, because scikit-learn builds trees on several threads.
 
-Two more scripts are useful when changing the simulator or the model:
+More scripts for changing the simulator or the model:
 
 ```bash
 .venv/bin/python training/calibrate.py    # simulated tracking next to the real profile
-.venv/bin/python training/analyse.py      # which possessions the model finds and misses
+.venv/bin/python training/ownership.py    # what the controlled-possession rule does to each game
+.venv/bin/python training/benchmark.py --labels controlled --save NAME --compare OTHER
+                                          # held-out scores in detail, two versions side by side
 ```
 
 ## Where things are
 
 ```
 generate_submission.py     the one command that makes the submission
-models/possession.npz      the trained model
+models/possession.npz      the trained model (models/possession_v1.npz: our first one)
 possession/                everything used on the match
 training/                  everything that touches the public training games
 scripts/profile_atd.py     summary statistics of the real tracking
@@ -117,23 +128,30 @@ tests/                     the checks
 | `training/fetch.py`, `dfl.py`, `metrica.py`, `dataset.py` | download and load the public games |
 | `training/simulate.py`, `calibrate.py` | make public tracking look like the real tracker's output |
 | `training/train.py`, `analyse.py` | train, test on held-out games, look at the errors |
+| `training/ownership.py` | the controlled-possession rule that relabels the public games |
+| `training/combine.py` | one model's "dead?" part with another's "home?" part, prices chosen on held-out games |
+| `training/benchmark.py`, `possession/errors.py` | held-out scores per IoU threshold, why possessions are missed, paired comparisons |
 | `tests/make_fake_bundle.py` | builds a stand-in for the data bundle from a public game |
 
 ## Results on games the model never saw
 
 A game is never labelled by a model that was trained on it. Scores are from the official
-`evaluation/possession_metrics.py`. We test under three simulator settings: our best estimate of
-the real tracker, one with more ball gaps during play, and one where the ball is tracked more
-often during stoppages.
+`evaluation/possession_metrics.py`, against the controlled-possession labels. We test under three
+simulator settings: our best estimate of the real tracker, one with more ball gaps during play,
+and one where the ball is tracked more often during stoppages. "First model" is the one in
+`models/possession_v1.npz`.
 
-| held-out games | simulator setting | our spellF1 | baseline spellF1 | our macroF1 | baseline macroF1 |
-|---|---|---|---|---|---|
-| DFL (7) | typical | 0.570 | 0.284 | 0.895 | 0.692 |
-| DFL (7) | more gaps during play | 0.537 | 0.252 | 0.882 | 0.664 |
-| DFL (7) | ball tracked more when dead | 0.566 | 0.267 | 0.893 | 0.616 |
-| Metrica (3) | typical | 0.635 | 0.314 | 0.882 | 0.711 |
-| Metrica (3) | more gaps during play | 0.626 | 0.286 | 0.873 | 0.676 |
-| Metrica (3) | ball tracked more when dead | 0.643 | 0.320 | 0.881 | 0.659 |
+| held-out games | simulator setting | our spellF1 | first model | baseline | our macroF1 | baseline macroF1 |
+|---|---|---|---|---|---|---|
+| DFL (7) | typical | 0.731 | 0.609 | 0.295 | 0.916 | 0.700 |
+| DFL (7) | more gaps during play | 0.700 | 0.594 | 0.256 | 0.905 | 0.671 |
+| DFL (7) | ball tracked more when dead | 0.732 | 0.604 | 0.281 | 0.914 | 0.623 |
+| Metrica (3) | typical | 0.763 | 0.713 | 0.321 | 0.892 | 0.717 |
+| Metrica (3) | more gaps during play | 0.752 | 0.716 | 0.290 | 0.881 | 0.681 |
+| Metrica (3) | ball tracked more when dead | 0.784 | 0.724 | 0.337 | 0.892 | 0.665 |
+
+Paired by game, the gain over the first model is +0.12 on the DFL games and +0.05 on the Metrica
+games, better in all ten, where twice the standard error across games is 0.03.
 
 On the real match the baseline scores spellF1 0.2433 and macroF1 0.6724 (the organisers' figures),
 so our simulated games are about as hard for it as the real one.

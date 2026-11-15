@@ -33,7 +33,7 @@ sys.path.insert(0, ROOT)
 
 from possession import errors, model as model_module  # noqa: E402
 from possession.submission import pm  # noqa: E402
-from training import simulate, train  # noqa: E402
+from training import dataset, simulate, train  # noqa: E402
 
 SHEETS = os.path.join(ROOT, ".cache", "benchmarks")
 GAP = np.array([pm.X], dtype=np.int8)
@@ -91,7 +91,8 @@ def run(work_dir, prices):
 
 
 def report(sheet):
-    print("\nheld-out results, decoder prices {}".format(sheet["prices"]))
+    print("\nheld-out results, decoder prices {}, scored against {} labels".format(
+        sheet["prices"], sheet.get("labels", "source")))
     print("  {:<8} {:<10} {:>8}  {}  {:>8} {:>6}  {:>11}  {:>8}".format(
         "source", "setting", "spellF1", "  ".join("@" + t for t in IOUS), "macroF1", "D-F1",
         "poss / true", "baseline"))
@@ -150,12 +151,16 @@ def main():
                         help="model whose decoder prices are used")
     parser.add_argument("--save", metavar="NAME", help="keep the result as a score sheet")
     parser.add_argument("--compare", metavar="NAME", help="compare with a saved score sheet")
+    parser.add_argument("--labels", default="source", choices=dataset.CONVENTIONS,
+                        help="the label convention to score against (training/ownership.py)")
     args = parser.parse_args()
 
     started = time.time()
+    train.LABELS = args.labels
     prices = model_module.Model.load(args.model_file).prices
     sheet = run(args.work_dir, prices)
-    sheet.update(name=args.save or "current", prices=prices, created=datetime.date.today().isoformat(),
+    sheet.update(name=args.save or "current", prices=prices, labels=args.labels,
+                 created=datetime.date.today().isoformat(),
                  work_dir=os.path.relpath(args.work_dir, ROOT),
                  model_file=os.path.relpath(args.model_file, ROOT))
     report(sheet)
