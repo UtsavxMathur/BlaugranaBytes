@@ -1,7 +1,8 @@
 """Pin the whole labelling pipeline's output on a made-up match.
 
-Features, the trees in models/possession.npz, the decoder, the Smart Tagging second pass and the
-broadcast evidence all run exactly as generate_submission.py runs them. If this checksum
+Features, the trees in models/possession.npz, the sequence network in models/sequence.npz, the
+decoder, the Smart Tagging second pass and the broadcast evidence all run exactly as
+generate_submission.py runs them. If this checksum
 changes, the submission would change too: that must be on purpose, and then PINNED is updated
 together with the documents' checksum.
 """
@@ -12,12 +13,12 @@ import types
 import numpy as np
 
 import generate_submission
-from possession import broadcast, model as model_module
+from possession import broadcast, model as model_module, seqnet
 from possession.smart_tagging import NO_TEAM, Tag
 from possession.tracking import Tracking
 from test_broadcast import PITCH, made_up_play
 
-PINNED = "74465ee53f9bfec39d5f63026ea2856b614c7a58f24e4ece08025659fb8b59f5"
+PINNED = "2f4c6e0b683b8bc589d3329fc4bb0ec6edc40b94854f4674af8f1aebe1b750ce"
 N = 15000
 
 
@@ -37,7 +38,8 @@ def pipeline_output():
     for start in (2000, 6000, 10500):
         state[start:start + 400] = broadcast.OTHER
     letters, prob = generate_submission.predict("possession", tracking, model_module.DEFAULT_PATH,
-                                                tags, types.SimpleNamespace(state=state))
+                                                tags, types.SimpleNamespace(state=state),
+                                                seqnet.DEFAULT_PATH)
     codes = np.array([{"H": 0, "A": 1, "D": 2, "X": 3}[v] for v in letters], dtype=np.int8)
     extra, _ = broadcast.dead_evidence(state, prob[:, 2], tracking.periods)
     return codes, extra

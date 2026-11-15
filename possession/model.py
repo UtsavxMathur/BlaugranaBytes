@@ -62,18 +62,26 @@ def combine(dead_raw, dead_raw_swapped, team_raw, team_raw_swapped):
     return np.stack([(1 - p_dead) * p_home, (1 - p_dead) * (1 - p_home), p_dead], axis=1)
 
 
-def probabilities(model, tracking):
-    """(n_frames, 3) probabilities of H, A, D. Rows outside the halves are NaN."""
+def probabilities(model, tracking, network=None):
+    """(n_frames, 3) probabilities of H, A, D. Rows outside the halves are NaN.
+
+    network  a possession.seqnet.Network: its scores are averaged with the trees' (both heads,
+             plain and teams-swapped) before they are combined.
+    """
     plain, names = features.compute(tracking)
     swapped, _ = features.compute(features.swap_teams(tracking))
     if names != model.names:
         raise ValueError("the model was trained on different features; retrain it")
     inside = tracking.in_periods()
+    raw = [trees.raw_score(model.dead, plain[inside]), trees.raw_score(model.dead, swapped[inside]),
+           trees.raw_score(model.team, plain[inside]), trees.raw_score(model.team, swapped[inside])]
+    if network is not None:
+        if network.names != names:
+            raise ValueError("the sequence network was trained on different features")
+        extra = network.raw(plain, swapped, tracking.periods, tracking.n_frames)
+        raw = [0.5 * (r + e[inside]) for r, e in zip(raw, extra)]
     out = np.full((tracking.n_frames, 3), np.nan)
-    out[inside] = combine(trees.raw_score(model.dead, plain[inside]),
-                          trees.raw_score(model.dead, swapped[inside]),
-                          trees.raw_score(model.team, plain[inside]),
-                          trees.raw_score(model.team, swapped[inside]))
+    out[inside] = combine(*raw)
     return out
 
 

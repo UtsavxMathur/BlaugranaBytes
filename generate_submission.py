@@ -7,9 +7,12 @@
 Reads data/tactical/ (or $MTAH_DATA_DIR), writes the CSV, runs the official format checks on it
 and prints its SHA-256, so two runs (or a fresh clone) can be compared byte for byte.
 
-  --model possession   our model (models/possession.npz, trained on public games only).
-  --model-file FILE    another model file; models/possession_v1.npz is our first submission's
-                       model (sha256 a320484e...29f5d).
+  --model possession   our model, trained on public games only: the trees in
+                       models/possession.npz blended with the sequence network in
+                       models/sequence.npz, which runs in whole numbers (possession/seqnet.py).
+  --no-sequence        trees only: our Phase 1 file (sha256 0674c775...3afa24).
+  --model-file FILE    another tree model; with --no-sequence, models/possession_v1.npz gives our
+                       first submission (sha256 a320484e...29f5d).
   --model baseline     the organisers' baseline (nearest player + majority vote). Its full-match
                        score is published (spellF1 0.2433), so it is the known floor.
   --compare FILE       % of graded frames on which the output agrees with another submission.
@@ -34,7 +37,7 @@ import time
 import numpy as np
 
 from possession import baseline, broadcast, competition, errors, geometry, model as model_module
-from possession import submission
+from possession import seqnet, submission
 from possession import tags as tags_module
 from possession.submission import pm
 from possession.tracking import show_path
@@ -112,10 +115,12 @@ def describe_broadcast(stages, before, after, tracking):
               (~was_live).mean(), (~now_live).mean()))
 
 
-def predict(model_name, tracking, model_path, tags=None, alignment=None):
+def predict(model_name, tracking, model_path, tags=None, alignment=None, network_path=None):
     """(label letters for every frame, frame probabilities or None).
 
-    alignment  a broadcast.Alignment: use the broadcast pictures as evidence of dead ball.
+    alignment     a broadcast.Alignment: use the broadcast pictures as evidence of dead ball.
+    network_path  a sequence network file (possession/seqnet.py): blended with the trees, and
+                  its decoder prices are used.
     """
     if model_name == "baseline":
         return baseline.predict(tracking), None
@@ -123,14 +128,21 @@ def predict(model_name, tracking, model_path, tags=None, alignment=None):
         raise SystemExit("{} not found. Train it (python training/train.py) or use "
                          "--model baseline.".format(show_path(model_path)))
     model = model_module.Model.load(model_path)
-    print("  model trained on {} public games, decoder prices {}".format(
-        len(model.info.get("games", [])), model.prices))
-    prob = model_module.probabilities(model, tracking)
-    codes = decode(prob, tracking, model.prices, tags, verbose=alignment is None)
+    prices, network = model.prices, None
+    if network_path is not None:
+        if not os.path.isfile(network_path):
+            raise SystemExit("{} not found".format(show_path(network_path)))
+        network = seqnet.Network.load(network_path)
+        prices = network.prices
+    print("  model trained on {} public games{}, decoder prices {}".format(
+        len(model.info.get("games", [])),
+        " + sequence network {}".format(show_path(network_path)) if network else "", prices))
+    prob = model_module.probabilities(model, tracking, network)
+    codes = decode(prob, tracking, prices, tags, verbose=alignment is None)
     if alignment is not None:
         extra, stages = broadcast.dead_evidence(alignment.state, prob[:, 2], tracking.periods,
                                                 exclude=second_half_wait(tracking))
-        again = decode(prob, tracking, model.prices, tags, live_cost=extra)
+        again = decode(prob, tracking, prices, tags, live_cost=extra)
         describe_broadcast(stages, codes, again, tracking)
         codes = again
     return submission.to_letters(codes), prob
@@ -280,6 +292,10 @@ def main():
                         help="ignore the Smart Tagging file (model output only)")
     parser.add_argument("--drift", action="store_true",
                         help="print each feature's percentiles here next to training's")
+    parser.add_argument("--sequence", metavar="FILE", default=seqnet.DEFAULT_PATH,
+                        help="the sequence network blended with the trees (possession/seqnet.py)")
+    parser.add_argument("--no-sequence", action="store_true",
+                        help="trees only (gives our Phase 1 file)")
     parser.add_argument("--broadcast", action="store_true",
                         help="add the broadcast step (not part of our submission)")
     args = parser.parse_args()
@@ -303,7 +319,9 @@ def main():
             alignment = load_alignment(tracking, args.data_dir, use_cache=not args.no_cache)
         except IOError as error:
             raise SystemExit("{}\n\n--broadcast needs data/broadcast/ as well.".format(error))
-    letters, prob = predict(args.model, tracking, args.model_file, tags, alignment)
+    letters, prob = predict(args.model, tracking, args.model_file, tags, alignment,
+                            None if args.no_sequence or args.model != "possession"
+                            else args.sequence)
     labels = submission.finalize(letters, tracking.periods)
 
     path = submission.write(args.out, labels)

@@ -10,10 +10,11 @@ untouched. We only added a pointer at the top of `README.md` and a few lines to 
 ## What happens when you run it
 
 ```
-data/tactical/ (the match)            models/possession.npz (trained on public games)
+data/tactical/ (the match)       models/possession.npz (trees) + models/sequence.npz (network)
         |                                          |
         v                                          v
-  read the tracking  -->  ~110 numbers per frame  -->  "dead?" and "home?" for every frame
+  read the tracking  -->  ~110 numbers per frame  -->  "dead?" and "home?" for every frame,
+                                                       the two models' answers averaged
                                                                  |
   read Smart Tagging  -->  kick-offs, goals, restarts  -->  decoder: frames into possessions
                                                                  |
@@ -39,12 +40,14 @@ use the videos.
 ```
 
 This writes `outputs/Blaugrana Bytes.csv`, runs the official format check on it and prints its
-SHA-256. It takes about half a minute. Only numpy and pandas are needed: the trained trees are
-stored in `models/possession.npz` and we run them ourselves in numpy, so a fresh clone gives the
-same file, byte for byte. Our checksum is in the technical document.
+SHA-256. It takes about 40 seconds. Only numpy and pandas are needed: the trained trees are
+stored in `models/possession.npz` and the sequence network in `models/sequence.npz` with whole
+numbers for weights, and we run both ourselves in numpy (the network in integer arithmetic), so a
+fresh clone gives the same file, byte for byte. Our checksum is in the technical document.
 
-`--model-file models/possession_v1.npz` writes our first submission instead, with the model
-trained on the labels as the files give them.
+`--no-sequence` leaves the network out and writes our second submission; adding
+`--model-file models/possession_v1.npz` writes our first, with the model trained on the labels as
+the files give them.
 
 `--broadcast` adds an optional step that lines the broadcast recording up with the tactical one
 and uses its replays and close-ups as evidence of dead ball. It is not part of our submission:
@@ -77,8 +80,9 @@ or positions.
 ## Retrain the model
 
 ```bash
-.venv/bin/pip install -r requirements-train.txt
-.venv/bin/python training/fetch.py        # downloads 2.8 GB of public games into .cache/public/
+.venv/bin/pip install -r requirements-train.txt   # scikit-learn and PyTorch
+.venv/bin/python training/fetch.py --only metrica   # public games into .cache/public/ (190 MB)
+.venv/bin/python training/fetch.py --only dfl       # (2.6 GB)
 # 1. labels as the files give them: our first model, whose "dead?" part we keep (~30 min)
 .venv/bin/python training/train.py --out models/possession_v1.npz
 # 2. controlled-possession labels (training/ownership.py): the "home?" part (~30 min)
@@ -86,11 +90,14 @@ or positions.
     --work-dir .cache/train_controlled --out .cache/models/possession_controlled.npz
 # 3. put the two together and choose the decoder prices on held-out games
 .venv/bin/python training/combine.py      # writes models/possession.npz
+# 4. the sequence network, blended with those trees; prices chosen on held-out games (~20 min)
+.venv/bin/python training/sequence.py --export models/sequence.npz
 ```
 
 Each training run tests the model on games it has not seen, picks the decoder settings on those,
 and then trains the final model on all ten games. A retrained model can differ slightly from the
-one in the repository, because scikit-learn builds trees on several threads.
+one in the repository, because scikit-learn and PyTorch add up some sums on several threads or on
+the graphics processor. Only training needs PyTorch.
 
 More scripts for changing the simulator or the model:
 
@@ -105,7 +112,8 @@ More scripts for changing the simulator or the model:
 
 ```
 generate_submission.py     the one command that makes the submission
-models/possession.npz      the trained model (models/possession_v1.npz: our first one)
+models/possession.npz      the trained trees (models/possession_v1.npz: our first ones)
+models/sequence.npz        the sequence network, in whole numbers
 possession/                everything used on the match
 training/                  everything that touches the public training games
 scripts/profile_atd.py     summary statistics of the real tracking
@@ -119,7 +127,9 @@ tests/                     the checks
 | `possession/features.py` | the numbers we compute for every frame |
 | `possession/trees.py` | runs the trained trees in numpy |
 | `possession/decode.py` | turns frame probabilities into possessions |
-| `possession/model.py` | puts features, trees and decoder together |
+| `possession/model.py` | puts features, trees, network and decoder together |
+| `possession/seqnet.py` | runs the sequence network in integer arithmetic |
+| `training/sequence.py` | trains the sequence network (PyTorch), tests it on held-out games, blends it with the trees |
 | `possession/smart_tagging.py`, `tags.py` | read the tags; use them for goals and restarts |
 | `possession/broadcast.py` | the optional `--broadcast` step: line the broadcast up with the tactical recording; turn its replays and close-ups into evidence of dead ball |
 | `possession/baseline.py` | the organisers' baseline on our arrays, to check the reader |
@@ -138,20 +148,22 @@ tests/                     the checks
 A game is never labelled by a model that was trained on it. Scores are from the official
 `evaluation/possession_metrics.py`, against the controlled-possession labels. We test under three
 simulator settings: our best estimate of the real tracker, one with more ball gaps during play,
-and one where the ball is tracked more often during stoppages. "First model" is the one in
-`models/possession_v1.npz`.
+and one where the ball is tracked more often during stoppages. "Trees alone" is our second
+submission (`--no-sequence`), "first model" the one in `models/possession_v1.npz`.
 
-| held-out games | simulator setting | our spellF1 | first model | baseline | our macroF1 | baseline macroF1 |
-|---|---|---|---|---|---|---|
-| DFL (7) | typical | 0.731 | 0.609 | 0.295 | 0.916 | 0.700 |
-| DFL (7) | more gaps during play | 0.700 | 0.594 | 0.256 | 0.905 | 0.671 |
-| DFL (7) | ball tracked more when dead | 0.732 | 0.604 | 0.281 | 0.914 | 0.623 |
-| Metrica (3) | typical | 0.763 | 0.713 | 0.321 | 0.892 | 0.717 |
-| Metrica (3) | more gaps during play | 0.752 | 0.716 | 0.290 | 0.881 | 0.681 |
-| Metrica (3) | ball tracked more when dead | 0.784 | 0.724 | 0.337 | 0.892 | 0.665 |
+| held-out games | simulator setting | our spellF1 | trees alone | first model | baseline | our macroF1 | baseline macroF1 |
+|---|---|---|---|---|---|---|---|
+| DFL (7) | typical | 0.760 | 0.731 | 0.609 | 0.295 | 0.924 | 0.700 |
+| DFL (7) | more gaps during play | 0.721 | 0.700 | 0.594 | 0.256 | 0.913 | 0.671 |
+| DFL (7) | ball tracked more when dead | 0.751 | 0.732 | 0.604 | 0.281 | 0.920 | 0.623 |
+| Metrica (3) | typical | 0.772 | 0.763 | 0.713 | 0.321 | 0.901 | 0.717 |
+| Metrica (3) | more gaps during play | 0.776 | 0.752 | 0.716 | 0.290 | 0.890 | 0.681 |
+| Metrica (3) | ball tracked more when dead | 0.787 | 0.784 | 0.724 | 0.337 | 0.896 | 0.665 |
 
-Paired by game, the gain over the first model is +0.12 on the DFL games and +0.05 on the Metrica
-games, better in all ten, where twice the standard error across games is 0.03.
+Paired by game, the trees trained on the controlled-possession labels gained +0.12 on the DFL
+games and +0.05 on the Metrica games over the first model, better in all ten (twice the standard
+error across games: 0.03). Adding the sequence network gained another +0.019, better in nine of
+ten (twice the standard error: 0.009).
 
 On the real match the baseline scores spellF1 0.2433 and macroF1 0.6724 (the organisers' figures),
 so our simulated games are about as hard for it as the real one.
