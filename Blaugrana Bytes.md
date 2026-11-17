@@ -366,6 +366,14 @@ narrow network instead of the wide one, 0.754; with the wide network alone, 0.75
 three-model average with trees trained only on the controlled labels, 0.761, which is within the
 noise. We kept the first. The trees alone score 0.727.
 
+Last, we gave every model more variety. The strict simulator draws a different tracker for each
+training copy of a game, but the trees and the second network had seen only three copies per
+game, and the wide network six. With twelve copies per game for all of them, at the same amount
+of computation (the trees keep every 16th frame of each copy instead of every 4th), the average
+gained +0.0096 on held-out games with each fold's prices chosen on the other folds, better in nine
+of the ten (twice the standard error: 0.006), under a rule written down before the run. The
+submitted models are trained this way.
+
 PyTorch is only used for training. A floating-point network can add its sums in a different order
 on another machine and change a last digit, so for the submission the weights are stored as whole
 numbers (`models/sequence_wide.npz`, `models/sequence2.npz`) and run in integer arithmetic by
@@ -436,7 +444,7 @@ The decoder also refuses a change of team that the evidence does not hold up for
 
 Under this rule very short possessions are rare (2-9% of the relabelled ones last under 2
 seconds), and the model finds only about a third of them. On held-out games it
-predicts about 6% fewer possessions than the truth has.
+predicts about 7% fewer possessions than the truth has.
 
 The ball is dead from the moment play stops until it is struck again. The model judges this
 mainly from the players: they slow down, and someone carries the ball to a spot. Two stretches
@@ -456,21 +464,21 @@ on the real match the baseline scores 0.2433.
 
 | held-out games | simulator setting | our spellF1 | trees alone | baseline | our macroF1 | baseline macroF1 |
 |---|---|---|---|---|---|---|
-| DFL (7) | low damage | 0.771 | 0.751 | 0.336 | 0.930 | 0.726 |
-| DFL (7) | mid | 0.748 | 0.717 | 0.249 | 0.926 | 0.611 |
-| DFL (7) | high damage | 0.724 | 0.681 | 0.179 | 0.911 | 0.501 |
-| Metrica (3) | low damage | 0.823 | 0.801 | 0.369 | 0.913 | 0.761 |
-| Metrica (3) | mid | 0.787 | 0.760 | 0.268 | 0.899 | 0.616 |
-| Metrica (3) | high damage | 0.755 | 0.696 | 0.187 | 0.885 | 0.527 |
+| DFL (7) | low damage | 0.774 | 0.758 | 0.336 | 0.931 | 0.726 |
+| DFL (7) | mid | 0.763 | 0.732 | 0.249 | 0.928 | 0.611 |
+| DFL (7) | high damage | 0.744 | 0.688 | 0.179 | 0.915 | 0.501 |
+| Metrica (3) | low damage | 0.827 | 0.810 | 0.369 | 0.915 | 0.761 |
+| Metrica (3) | mid | 0.792 | 0.768 | 0.268 | 0.904 | 0.616 |
+| Metrica (3) | high damage | 0.761 | 0.705 | 0.187 | 0.888 | 0.527 |
 
 ```
 spellF1 on games the model never saw (mid simulator setting)
 
-Metrica   ours         #######################################  0.79
-          trees alone  ######################################   0.76
+Metrica   ours         ########################################  0.79
+          trees alone  ######################################   0.77
           baseline     #############                            0.27
-DFL       ours         #####################################    0.75
-          trees alone  ####################################     0.72
+DFL       ours         ######################################   0.76
+          trees alone  #####################################    0.73
           baseline     ############                             0.25
                        |         |         |         |
                        0        0.2       0.4       0.6
@@ -526,7 +534,7 @@ python3 -m venv .venv
 ```
 
 The command prints the SHA-256 of the file it wrote. Ours is
-`c5539394fe39271f32cbe2277139df4a6de0574ea17886144225786dedb1b598`, and we got the same value from a fresh clone of the repository. It takes about
+`260ef1fc052f844b7926118467a395d41a9e5004acc978c97b93e239203c6f4d`, and we got the same value from a fresh clone of the repository. It takes about
 a minute. Our earlier versions, whose training simulator was set from summary statistics of the
 match's tracking, are in the git history (commit `6630f72` and before). `--broadcast` (which
 also needs `data/broadcast/`) adds the optional broadcast step, which is not part of our file.
@@ -539,22 +547,23 @@ The trained models are in the repository (`models/possession.npz`, `models/seque
 .venv/bin/python training/fetch.py --only metrica         # 190 MB of public data
 .venv/bin/python training/fetch.py --only dfl             # 2.6 GB
 # the trees: "dead?" from the labels as given, "home?" from controlled possession, combined
-.venv/bin/python training/train.py --work-dir .cache/strict/train \
+# (12 simulated copies of each game, every 16th frame of each)
+.venv/bin/python training/train.py --copies 12 --thin 16 --work-dir .cache/strict/train \
     --out .cache/strict/models/possession_v1.npz
-.venv/bin/python training/train.py --labels controlled --work-dir .cache/strict/train_controlled \
-    --out .cache/strict/models/possession_controlled.npz
+.venv/bin/python training/train.py --labels controlled --copies 12 --thin 16 \
+    --work-dir .cache/strict/train_controlled --out .cache/strict/models/possession_controlled.npz
 .venv/bin/python training/combine.py --dead-model .cache/strict/models/possession_v1.npz \
     --dead-work-dir .cache/strict/train --team-model .cache/strict/models/possession_controlled.npz \
     --team-work-dir .cache/strict/train_controlled --work-dir .cache/strict/train_hybrid
 # the wide network: held-out predictions, in whole numbers
-.venv/bin/python training/sequence.py --steps cv int --copies 6 --train-steps 3000 --cosine \
+.venv/bin/python training/sequence.py --steps cv int --copies 12 --train-steps 3000 --cosine \
     --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt
 # the second network: held-out predictions, the average of all three and its prices, the final network
-.venv/bin/python training/sequence.py --change --with .cache/strict/train_seqB_int \
+.venv/bin/python training/sequence.py --change --copies 12 --with .cache/strict/train_seqB_int \
     --trees .cache/strict/train_hybrid --name strict2 --compare none \
     --work-dir .cache/strict/train_seq_change --out .cache/strict/models/sequence2.pt --export models/sequence2.npz
 # the final wide network, with the same prices
-.venv/bin/python training/sequence.py --steps final --copies 6 --train-steps 3000 --cosine \
+.venv/bin/python training/sequence.py --steps final --copies 12 --train-steps 3000 --cosine \
     --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt \
     --export models/sequence_wide.npz --prices .cache/strict/train_seq_change_blend/prices.json
 ```
