@@ -83,10 +83,10 @@ or positions.
 .venv/bin/python training/fetch.py --only metrica   # public games into .cache/public/ (190 MB)
 .venv/bin/python training/fetch.py --only dfl       # (2.6 GB)
 # 1. trees on the labels as the files give them: their "dead?" part is kept (~30 min)
-.venv/bin/python training/train.py --work-dir .cache/strict/train \
+.venv/bin/python training/train.py --copies 12 --thin 16 --work-dir .cache/strict/train \
     --out .cache/strict/models/possession_v1.npz
 # 2. trees on controlled-possession labels (training/ownership.py): the "home?" part (~30 min)
-.venv/bin/python training/train.py --labels controlled --work-dir .cache/strict/train_controlled \
+.venv/bin/python training/train.py --labels controlled --copies 12 --thin 16 --work-dir .cache/strict/train_controlled \
     --out .cache/strict/models/possession_controlled.npz
 # 3. put the two together and choose their decoder prices on held-out games (writes models/possession.npz)
 .venv/bin/python training/combine.py --dead-model .cache/strict/models/possession_v1.npz \
@@ -94,15 +94,15 @@ or positions.
     --team-work-dir .cache/strict/train_controlled --work-dir .cache/strict/train_hybrid
 # 4. the wide network (128 channels, 6 copies, 3000 steps, cosine learning rate, dropout 0.1):
 #    held-out predictions in whole numbers (~50 min)
-.venv/bin/python training/sequence.py --steps cv int --copies 6 --train-steps 3000 --cosine \
+.venv/bin/python training/sequence.py --steps cv int --copies 12 --train-steps 3000 --cosine \
     --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt
 # 5. the second network (also trained with event heads, which are dropped): held-out predictions,
 #    the average of trees and both networks, its decoder prices, the final network (~20 min)
-.venv/bin/python training/sequence.py --change --with .cache/strict/train_seqB_int \
+.venv/bin/python training/sequence.py --change --copies 12 --with .cache/strict/train_seqB_int \
     --trees .cache/strict/train_hybrid --name strict2 --compare none \
     --work-dir .cache/strict/train_seq_change --out .cache/strict/models/sequence2.pt --export models/sequence2.npz
 # 6. the final wide network, with the same prices
-.venv/bin/python training/sequence.py --steps final --copies 6 --train-steps 3000 --cosine \
+.venv/bin/python training/sequence.py --steps final --copies 12 --train-steps 3000 --cosine \
     --dropout 0.1 --width 128 --work-dir .cache/strict/train_seqB --out .cache/strict/models/sequence_wide.pt \
     --export models/sequence_wide.npz --prices .cache/strict/train_seq_change_blend/prices.json
 ```
@@ -165,16 +165,18 @@ fixed simulator settings across the ranges the training draws from: low, mid and
 
 | held-out games | simulator setting | our spellF1 | trees alone | baseline | our macroF1 | baseline macroF1 |
 |---|---|---|---|---|---|---|
-| DFL (7) | low damage | 0.771 | 0.751 | 0.336 | 0.930 | 0.726 |
-| DFL (7) | mid | 0.748 | 0.717 | 0.249 | 0.926 | 0.611 |
-| DFL (7) | high damage | 0.724 | 0.681 | 0.179 | 0.911 | 0.501 |
-| Metrica (3) | low damage | 0.823 | 0.801 | 0.369 | 0.913 | 0.761 |
-| Metrica (3) | mid | 0.787 | 0.760 | 0.268 | 0.899 | 0.616 |
-| Metrica (3) | high damage | 0.755 | 0.696 | 0.187 | 0.885 | 0.527 |
+| DFL (7) | low damage | 0.774 | 0.758 | 0.336 | 0.931 | 0.726 |
+| DFL (7) | mid | 0.763 | 0.732 | 0.249 | 0.928 | 0.611 |
+| DFL (7) | high damage | 0.744 | 0.688 | 0.179 | 0.915 | 0.501 |
+| Metrica (3) | low damage | 0.827 | 0.810 | 0.369 | 0.915 | 0.761 |
+| Metrica (3) | mid | 0.792 | 0.768 | 0.268 | 0.904 | 0.616 |
+| Metrica (3) | high damage | 0.761 | 0.705 | 0.187 | 0.888 | 0.527 |
 
 The choice of networks was made on these held-out games, with each fold's prices chosen on the
 other folds: trees with the wide and the second network 0.760, with the narrow network instead
-0.754, with the wide network alone 0.751, trees alone 0.727. (Our earlier versions, with a
+0.754, with the wide network alone 0.751, trees alone 0.727. Then every model got twelve
+simulated copies per game instead of three (six for the wide network) at the same computation:
++0.0096 with prices chosen on the other folds, better in nine of ten games. (Our earlier versions, with a
 simulator set from summary statistics of the match, are compared in the git history.)
 
 On the real match the baseline scores spellF1 0.2433 and macroF1 0.6724 (the organisers' figures),

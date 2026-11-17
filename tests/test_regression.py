@@ -18,7 +18,7 @@ from possession.smart_tagging import NO_TEAM, Tag
 from possession.tracking import Tracking
 from test_broadcast import PITCH, made_up_play
 
-PINNED = "f06bb3619c53879819c20a262fa96eec35f9183a41f5486b098b20d1683031b2"
+PINNED = "b48e4bed17c14a8bbcd608da65f5cd5a1c4593879f9ccb2ce3795c0af980c8d7"
 N = 15000
 
 

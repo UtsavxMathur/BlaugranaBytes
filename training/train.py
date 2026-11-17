@@ -313,7 +313,7 @@ def step_final(rows, names, prices, quick, path, spell_weight=0.0):
 
 
 def main():
-    global LABELS, WEIGHT_CAP, WORK_DIR, DEAD_WEIGHTS, FOLDS
+    global LABELS, WEIGHT_CAP, WORK_DIR, DEAD_WEIGHTS, FOLDS, COPIES, THIN
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--steps", nargs="+", default=["cv", "tune", "final"],
                         choices=["cv", "tune", "final"])
@@ -332,7 +332,12 @@ def main():
                              "as given")
     parser.add_argument("--games", default="base", choices=sorted(GAME_SETS),
                         help="base: the 7 DFL and 3 Metrica games; all: also the 20 SkillCorner")
+    parser.add_argument("--copies", type=int, default=COPIES,
+                        help="simulated copies of each training game")
+    parser.add_argument("--thin", type=int, default=THIN,
+                        help="keep every n-th frame of each copy (copies take different frames)")
     args = parser.parse_args()
+    COPIES, THIN = args.copies, args.thin
     LABELS, DEAD_WEIGHTS, FOLDS = args.labels, args.dead_weights, GAME_SETS[args.games]
     if args.weight_cap:
         WEIGHT_CAP = args.weight_cap
